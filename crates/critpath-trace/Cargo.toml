@@ -1,0 +1,17 @@
+[package]
+name = "critpath-trace"
+description = "Reads Trace Event Format into an activity graph, counting everything it could not read."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+critpath-core.workspace = true
+fitkit-core.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

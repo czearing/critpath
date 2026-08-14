@@ -1,0 +1,22 @@
+[package]
+name = "critpath"
+description = "Finds why a program finished when it did, from a trace, in any language, with refusals instead of guesses."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+keywords = ["performance", "profiling", "critical-path", "tracing"]
+categories = ["development-tools::profiling"]
+
+[dependencies]
+critpath-core.workspace = true
+critpath-graph.workspace = true
+critpath-laws.workspace = true
+critpath-trace.workspace = true
+fitkit-core.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,22 @@
+{
+  "traceEvents": [
+    { "ph": "M", "name": "thread_name", "pid": 1, "tid": 1, "args": { "name": "CrRendererMain" } },
+    { "ph": "M", "name": "thread_name", "pid": 1, "tid": 2, "args": { "name": "DedicatedWorker" } },
+
+    { "ph": "X", "name": "ParseHTML", "cat": "blink", "pid": 1, "tid": 1, "ts": 0, "dur": 20000 },
+    { "ph": "s", "name": "PostMessage", "cat": "devtools.timeline.async", "id": "job-1", "pid": 1, "tid": 1, "ts": 15000 },
+
+    { "ph": "X", "name": "TranscodeImage", "cat": "worker", "pid": 1, "tid": 2, "ts": 10000, "dur": 80000 },
+    { "ph": "f", "name": "PostMessage", "cat": "devtools.timeline.async", "id": "job-1", "pid": 1, "tid": 2, "ts": 20000 },
+    { "ph": "X", "name": "MinorGC", "cat": "v8", "pid": 1, "tid": 2, "ts": 30000, "dur": 5000 },
+    { "ph": "X", "name": "MinorGC", "cat": "v8", "pid": 1, "tid": 2, "ts": 40000, "dur": 5000 },
+
+    { "ph": "X", "name": "EvaluateScript", "cat": "v8", "pid": 1, "tid": 1, "ts": 20000, "dur": 60000 },
+    { "ph": "X", "name": "JSON.parse", "cat": "v8", "pid": 1, "tid": 1, "ts": 80000, "dur": 15000 },
+
+    { "ph": "I", "name": "navigationStart", "cat": "blink.user_timing", "pid": 1, "tid": 1, "ts": 95000 },
+
+    { "ph": "X", "name": "JSON.parse", "cat": "v8", "pid": 1, "tid": 1, "ts": 130000, "dur": 15000 },
+    { "ph": "X", "name": "CommitLayerTree", "cat": "cc", "pid": 1, "tid": 1, "ts": 145000, "dur": 10000 }
+  ]
+}

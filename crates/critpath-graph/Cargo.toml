@@ -1,0 +1,17 @@
+[package]
+name = "critpath-graph"
+description = "The longest dependency chain through an activity graph, and how much slack it holds."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+critpath-core.workspace = true
+fitkit-core.workspace = true
+fitkit-dp.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/critpath-core",
+    "crates/critpath-trace",
+    "crates/critpath-graph",
+    "crates/critpath-laws",
+    "crates/critpath",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+repository = "https://github.com/czearing/critpath"
+authors = ["czearing"]
+
+[workspace.dependencies]
+critpath-core = { version = "0.1.0", path = "crates/critpath-core" }
+critpath-trace = { version = "0.1.0", path = "crates/critpath-trace" }
+critpath-graph = { version = "0.1.0", path = "crates/critpath-graph" }
+critpath-laws = { version = "0.1.0", path = "crates/critpath-laws" }
+
+fitkit-core = { git = "https://github.com/czearing/fitkit" }
+fitkit-dp = { git = "https://github.com/czearing/fitkit" }
+fitkit-ledger = { git = "https://github.com/czearing/fitkit" }
+
+serde_json = "1"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+must_use_candidate = "allow"
+module_name_repetitions = "allow"
+# Durations are microseconds counted into f64 for scoring. Exact below 2^52.
+cast_precision_loss = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

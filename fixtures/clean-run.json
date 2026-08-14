@@ -1,0 +1,10 @@
+{
+  "traceEvents": [
+    { "ph": "M", "name": "thread_name", "pid": 7, "tid": 7, "args": { "name": "main" } },
+    { "ph": "X", "name": "load_config", "cat": "app", "pid": 7, "tid": 7, "ts": 0, "dur": 400 },
+    { "ph": "X", "name": "open_socket", "cat": "app", "pid": 7, "tid": 7, "ts": 400, "dur": 900 },
+    { "ph": "B", "name": "serve", "cat": "app", "pid": 7, "tid": 7, "ts": 1300 },
+    { "ph": "E", "pid": 7, "tid": 7, "ts": 2100 },
+    { "ph": "X", "name": "flush", "cat": "app", "pid": 7, "tid": 7, "ts": 2100, "dur": 150 }
+  ]
+}

@@ -1,0 +1,15 @@
+[package]
+name = "critpath-core"
+description = "Activities, edges, tracks and coverage: the language-free vocabulary critpath reasons in."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+fitkit-core.workspace = true
+
+[lints]
+workspace = true

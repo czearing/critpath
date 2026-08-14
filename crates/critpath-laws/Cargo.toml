@@ -1,0 +1,19 @@
+[package]
+name = "critpath-laws"
+description = "Threshold-free rules that read a critical path, each stating the conditions it may speak under."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+critpath-core.workspace = true
+critpath-graph.workspace = true
+fitkit-core.workspace = true
+fitkit-dp.workspace = true
+fitkit-ledger.workspace = true
+
+[lints]
+workspace = true
