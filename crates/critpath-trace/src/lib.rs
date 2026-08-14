@@ -15,10 +15,12 @@ mod read;
 
 pub use read::ParseError;
 
-/// Phases that carry an interval or an edge and are therefore read.
+/// Phases that carry an interval on a call stack and are therefore read.
 const INTERVAL: [&str; 3] = ["X", "B", "E"];
+/// Phases that carry an interval correlated by identity, which may overlap and cross threads.
+const ASYNC: [&str; 2] = ["b", "e"];
 /// Phases understood to carry neither an interval nor an edge. Skipping them is not a hole.
-const IGNORED: [&str; 9] = ["M", "i", "I", "c", "C", "b", "n", "e", "R"];
+const IGNORED: [&str; 7] = ["M", "i", "I", "c", "C", "n", "R"];
 /// Phases that state a dependency.
 const FLOW: [&str; 3] = ["s", "t", "f"];
 
@@ -29,6 +31,15 @@ struct FlowPoint {
     at: Micros,
 }
 
+/// Work opened and not yet closed.
+struct Open {
+    track: Track,
+    name: String,
+    category: String,
+    start: Micros,
+    subject: Option<String>,
+}
+
 /// Read a trace into a graph.
 ///
 /// # Errors
@@ -37,14 +48,20 @@ struct FlowPoint {
 pub fn read(bytes: &[u8]) -> Result<Graph, ParseError> {
     let events = read::events(bytes)?;
     let mut graph = Graph::default();
-    let mut open: Vec<(Track, String, String, Micros)> = Vec::new();
+    let mut open: Vec<Open> = Vec::new();
+    let mut open_async: Vec<(String, Open)> = Vec::new();
     let mut flows: Vec<FlowPoint> = Vec::new();
+    let mut window_closes = Micros::MIN;
 
     for event in &events {
         let Some(phase) = event.get("ph").and_then(Value::as_str) else {
             graph.coverage.unread += 1;
             continue;
         };
+        if let Some(ts) = read::at(event) {
+            let dur = event.get("dur").and_then(Value::as_i64).unwrap_or(0).max(0);
+            window_closes = window_closes.max(ts.saturating_add(dur));
+        }
         if IGNORED.contains(&phase) {
             continue;
         }
@@ -55,6 +72,10 @@ pub fn read(bytes: &[u8]) -> Result<Graph, ParseError> {
             }
             continue;
         }
+        if ASYNC.contains(&phase) {
+            read::asynchronous(event, phase, &mut graph, &mut open_async);
+            continue;
+        }
         if !INTERVAL.contains(&phase) {
             graph.coverage.unread += 1;
             continue;
@@ -62,12 +83,17 @@ pub fn read(bytes: &[u8]) -> Result<Graph, ParseError> {
         read::interval(event, phase, &mut graph, &mut open);
     }
 
-    // A begin with no end states a start time and nothing else. It is a hole, not a zero-length
-    // activity, because inventing an end would put a fabricated interval on the critical path.
-    graph.coverage.unpaired += open.len();
+    // Work still running when the trace stopped is censored, not missing. Holding it open to the
+    // end of the window claims the least the evidence allows: it certainly ran that long, and it
+    // may have run longer. Zero confidence keeps it off every chain, while its interval still
+    // answers a rule that wants to know whether the machine was idle.
+    for held in open.into_iter().chain(open_async.into_iter().map(|(_, held)| held)) {
+        push(&mut graph, held, window_closes, Confidence::ZERO, false);
+        graph.coverage.censored += 1;
+    }
 
-    graph.edges.extend(bind::serial(&graph.activities));
-    let (flow_edges, unbound) = bind::flows(&graph.activities, &flows);
+    graph.edges.extend(bind::serial(&graph));
+    let (flow_edges, unbound) = bind::flows(&graph, &flows);
     graph.edges.extend(flow_edges);
     graph.coverage.unbound_flows += unbound;
     graph.edges.sort_unstable_by_key(|e| (e.from, e.to, e.kind == EdgeKind::Serial));
@@ -75,19 +101,27 @@ pub fn read(bytes: &[u8]) -> Result<Graph, ParseError> {
     Ok(graph)
 }
 
-/// Record a completed interval, or open and close a begin/end pair.
+/// Record one interval.
 fn push(
     graph: &mut Graph,
-    track: Track,
-    name: String,
-    category: String,
-    start: Micros,
+    held: Open,
     end: Micros,
+    confidence: Confidence,
+    concurrent: bool,
 ) -> ActivityId {
     // An interval that ends before it starts is a clock fault, not a measurement. It is kept so
     // the count reconciles, and silenced so nothing downstream can decide from it.
-    let confidence = if end > start { Confidence::FULL } else { Confidence::ZERO };
-    graph.activities.push(Activity { name, category, track, start, end, confidence });
+    let confidence = if end > held.start { confidence } else { Confidence::ZERO };
+    graph.activities.push(Activity {
+        name: held.name,
+        category: held.category,
+        track: held.track,
+        start: held.start,
+        end,
+        confidence,
+        concurrent,
+        subject: held.subject,
+    });
     graph.activities.len() - 1
 }
 
@@ -111,9 +145,28 @@ mod tests {
     }
 
     #[test]
-    fn a_begin_without_an_end_is_a_hole_rather_than_an_activity() {
-        let graph = read(br#"[{"ph":"B","name":"eval","pid":1,"tid":1,"ts":0}]"#).unwrap();
-        assert!(graph.activities.is_empty());
+    fn a_begin_without_an_end_is_censored_at_the_window_rather_than_dropped() {
+        // The recording stopped while this was running. Dropping it would understate the machine's
+        // work and let an idle-gap rule fire over work that was in fact in flight; inventing an end
+        // would overstate it. Holding it to the last timestamp seen claims the least the evidence
+        // allows, and marking it censored keeps it out of any chain.
+        let graph = read(
+            br#"[{"ph":"B","name":"eval","pid":1,"tid":1,"ts":0},
+                 {"ph":"X","name":"tick","pid":1,"tid":1,"ts":10,"dur":5}]"#,
+        )
+        .unwrap();
+        let held = graph.activities.iter().find(|a| a.name == "eval").unwrap();
+        assert_eq!(held.end, 15, "held open to the end of the recording, not beyond");
+        assert!(!held.is_informative(), "censored work can decide nothing");
+        assert!(held.overlaps(0, 15), "but the machine was still busy with it");
+        assert_eq!(graph.coverage.censored, 1);
+        assert_eq!(graph.coverage.unpaired, 0, "a cut recording is not a missing event");
+        assert!(graph.coverage.is_total(), "every real capture ends mid-flight");
+    }
+
+    #[test]
+    fn an_end_with_nothing_open_is_a_hole() {
+        let graph = read(br#"[{"ph":"E","pid":1,"tid":1,"ts":9}]"#).unwrap();
         assert_eq!(graph.coverage.unpaired, 1);
         assert!(!graph.coverage.is_total());
     }

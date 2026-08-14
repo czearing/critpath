@@ -1,1 +1,4 @@
 /target
+
+# Captured traces. Real evidence, far too large for git.
+.capture/

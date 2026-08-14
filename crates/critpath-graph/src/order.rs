@@ -97,6 +97,8 @@ mod tests {
                     start,
                     end,
                     confidence: Confidence::FULL,
+                    concurrent: false,
+                    subject: None,
                 })
                 .collect(),
             edges: edges

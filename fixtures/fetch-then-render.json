@@ -1,0 +1,11 @@
+{
+  "traceEvents": [
+    { "ph": "M", "name": "thread_name", "pid": 5, "tid": 5, "args": { "name": "main" } },
+    { "ph": "X", "name": "parse_html", "cat": "blink", "pid": 5, "tid": 5, "ts": 0, "dur": 300 },
+    { "ph": "b", "name": "ResourceFetch", "cat": "loading", "pid": 5, "tid": 5, "ts": 300, "id": "0x2a" },
+    { "ph": "s", "name": "needs", "cat": "loading", "pid": 5, "tid": 5, "ts": 290, "id": 9 },
+    { "ph": "e", "name": "ResourceFetch", "cat": "loading", "pid": 5, "tid": 5, "ts": 2300, "id": "0x2a" },
+    { "ph": "f", "name": "needs", "cat": "loading", "pid": 5, "tid": 5, "ts": 2350, "id": 9, "bp": "e" },
+    { "ph": "X", "name": "render", "cat": "blink", "pid": 5, "tid": 5, "ts": 2300, "dur": 400 }
+  ]
+}

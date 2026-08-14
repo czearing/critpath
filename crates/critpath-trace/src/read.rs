@@ -3,9 +3,10 @@
 use core::fmt;
 
 use critpath_core::{Graph, Micros, Track};
+use fitkit_core::Confidence;
 use serde_json::Value;
 
-use super::{push, FlowPoint};
+use super::{FlowPoint, Open};
 
 /// Why a trace could not be read at all.
 #[derive(Debug)]
@@ -65,23 +66,78 @@ fn text(event: &Value, field: &str) -> String {
     event.get(field).and_then(Value::as_str).unwrap_or_default().to_owned()
 }
 
+/// The timestamp an event carries, if it carries one.
+pub fn at(event: &Value) -> Option<Micros> {
+    number(event, "ts")
+}
+
 /// Read one flow endpoint. Its `id` may be a string or a number in the wild.
 pub fn flow(event: &Value) -> Option<FlowPoint> {
-    let id = match event.get("id") {
-        Some(Value::String(id)) => id.clone(),
-        Some(Value::Number(id)) => id.to_string(),
-        _ => return None,
+    Some(FlowPoint { id: identity(event)?, track: track(event)?, at: number(event, "ts")? })
+}
+
+/// The correlating identity of an async or flow event.
+fn identity(event: &Value) -> Option<String> {
+    match event.get("id").or_else(|| event.get("id2")) {
+        Some(Value::String(id)) => Some(id.clone()),
+        Some(Value::Number(id)) => Some(id.to_string()),
+        Some(Value::Object(scoped)) => scoped.values().next().map(std::string::ToString::to_string),
+        _ => None,
+    }
+}
+
+/// What the event says the work was done to, as one canonical string.
+///
+/// Deliberately literal. Every argument the source recorded is kept, in sorted order, and two
+/// subjects match only when the source said exactly the same thing about both. That is a strict
+/// test and it is meant to be: it can miss a real duplicate whose arguments carry a serial number,
+/// and that costs a finding, whereas a loose test invents duplicates that were never there and
+/// costs the tool its only claim. Which arguments are meaningful differs per producer, so guessing
+/// is the one thing this reader must not do.
+fn subject(event: &Value) -> Option<String> {
+    let Some(Value::Object(args)) = event.get("args") else {
+        return None;
     };
-    Some(FlowPoint { id, track: track(event)?, at: number(event, "ts")? })
+    if args.is_empty() {
+        return None;
+    }
+    let mut fields: Vec<String> =
+        args.iter().map(|(field, value)| format!("{field}={value}")).collect();
+    fields.sort_unstable();
+    Some(fields.join("\u{1}"))
+}
+
+/// Read one async interval event, opening or closing a pair correlated by identity.
+///
+/// Async work is keyed by identity rather than by a call stack: it may overlap, and it may cross
+/// threads. Pairing is therefore by id and category, oldest open first, and never by position.
+pub fn asynchronous(event: &Value, phase: &str, graph: &mut Graph, open: &mut Vec<(String, Open)>) {
+    let (Some(track), Some(ts), Some(id)) = (track(event), number(event, "ts"), identity(event))
+    else {
+        graph.coverage.unread += 1;
+        return;
+    };
+    let category = text(event, "cat");
+    let key = format!("{id}\u{1}{category}\u{1}{}", text(event, "name"));
+    if phase == "b" {
+        open.push((
+            key,
+            Open { track, name: text(event, "name"), category, start: ts, subject: subject(event) },
+        ));
+        return;
+    }
+    match open.iter().position(|(seen, _)| *seen == key) {
+        Some(index) => {
+            let (_, held) = open.remove(index);
+            super::push(graph, held, ts, Confidence::FULL, true);
+        }
+        // An async end whose begin was never seen names work with no known start.
+        None => graph.coverage.unpaired += 1,
+    }
 }
 
 /// Read one interval event, opening or closing a pair as the phase requires.
-pub fn interval(
-    event: &Value,
-    phase: &str,
-    graph: &mut Graph,
-    open: &mut Vec<(Track, String, String, Micros)>,
-) {
+pub fn interval(event: &Value, phase: &str, graph: &mut Graph, open: &mut Vec<Open>) {
     let (Some(track), Some(ts)) = (track(event), number(event, "ts")) else {
         graph.coverage.unread += 1;
         return;
@@ -89,13 +145,26 @@ pub fn interval(
     match phase {
         "X" => {
             let duration = number(event, "dur").unwrap_or(0);
-            push(graph, track, text(event, "name"), text(event, "cat"), ts, ts + duration);
+            let held = Open {
+                track,
+                name: text(event, "name"),
+                category: text(event, "cat"),
+                start: ts,
+                subject: subject(event),
+            };
+            super::push(graph, held, ts + duration, Confidence::FULL, false);
         }
-        "B" => open.push((track, text(event, "name"), text(event, "cat"), ts)),
-        _ => match open.iter().rposition(|(open_track, ..)| *open_track == track) {
+        "B" => open.push(Open {
+            track,
+            name: text(event, "name"),
+            category: text(event, "cat"),
+            start: ts,
+            subject: subject(event),
+        }),
+        _ => match open.iter().rposition(|held| held.track == track) {
             Some(index) => {
-                let (track, name, category, start) = open.remove(index);
-                push(graph, track, name, category, start, ts);
+                let held = open.remove(index);
+                super::push(graph, held, ts, Confidence::FULL, false);
             }
             // An end with nothing open names work whose start was never recorded.
             None => graph.coverage.unpaired += 1,

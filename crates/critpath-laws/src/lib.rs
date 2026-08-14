@@ -7,7 +7,7 @@
 
 use critpath_core::{ActivityId, Graph, Micros};
 use critpath_graph::CriticalPath;
-use fitkit_core::Answer;
+use fitkit_core::Refusal;
 use fitkit_ledger::{ask, Citation};
 
 mod laws;
@@ -92,16 +92,57 @@ pub const CRITICAL_PATH: Citation = Citation {
     source: "Wang et al., Demystifying Page Load Performance with WProf, NSDI 2013",
 };
 
+/// A rule that declined to answer, and why.
+#[derive(Clone, Debug)]
+pub struct Silence {
+    /// The rule that stayed silent.
+    pub rule: &'static str,
+    /// What it would have needed.
+    pub because: Refusal,
+}
+
+/// What the rules could and could not prove.
+#[derive(Clone, Debug, Default)]
+pub struct Proof {
+    /// Everything proved.
+    pub findings: Vec<Finding>,
+    /// Rules that refused, kept so silence is never mistaken for a clean result.
+    pub silent: Vec<Silence>,
+}
+
+impl Proof {
+    /// Whether a clean bill of health can be believed.
+    ///
+    /// No findings and no silent rules means the trace was searched in full and nothing was found.
+    /// No findings while a rule refused means only that nobody looked.
+    pub fn is_conclusive(&self) -> bool {
+        self.silent.is_empty()
+    }
+}
+
 /// Everything the rules can prove about this observation.
 ///
-/// # Errors
-///
-/// A refusal from the first rule whose conditions the trace does not meet. Coverage is the usual
-/// one: a trace with unread events may be missing exactly the activity a rule would have named, so
-/// silence from an incomplete trace is indistinguishable from a clean result and is refused.
-pub fn findings(observation: Observation<'_>) -> Answer<Vec<Finding>> {
-    let mut found = ask(&laws::RepeatedWork::default(), &observation)?;
-    found.extend(ask(&laws::DeadWait::default(), &observation)?);
-    found.extend(ask(&laws::OffPath::default(), &observation)?);
-    Ok(found)
+/// A rule that refuses does not silence the others. Each states its own conditions, so a trace
+/// that defeats one can still be answered by the rest, and the refusals are returned alongside the
+/// findings rather than in place of them.
+pub fn findings(observation: Observation<'_>) -> Proof {
+    let mut proof = Proof::default();
+    ask_into(&laws::RepeatedWork::default(), &observation, "repeated work", &mut proof);
+    ask_into(&laws::DeadWait::default(), &observation, "dead wait", &mut proof);
+    ask_into(&laws::OffPath::default(), &observation, "off-path dominance", &mut proof);
+    // Ordered by what each costs the chain, because a report that leads with the cheapest finding
+    // makes the reader do the ranking the tool exists to do.
+    proof.findings.sort_by_key(|finding| core::cmp::Reverse(finding.cost()));
+    proof
+}
+
+/// Ask one rule and file its answer, whichever kind it is.
+fn ask_into<'a, L>(law: &L, observation: &Observation<'a>, rule: &'static str, proof: &mut Proof)
+where
+    L: fitkit_ledger::Law<Input = Observation<'a>, Output = Vec<Finding>>,
+{
+    match ask(law, observation) {
+        Ok(found) => proof.findings.extend(found),
+        Err(because) => proof.silent.push(Silence { rule, because }),
+    }
 }

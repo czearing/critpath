@@ -1,7 +1,7 @@
 {
   "traceEvents": [
-    { "ph": "X", "name": "JSON.parse", "cat": "v8", "pid": 1, "tid": 1, "ts": 0, "dur": 100 },
-    { "ph": "X", "name": "JSON.parse", "cat": "v8", "pid": 1, "tid": 1, "ts": 100, "dur": 100 },
+    { "ph": "X", "name": "JSON.parse", "cat": "v8", "pid": 1, "tid": 1, "ts": 0, "dur": 100, "args": { "url": "/api/session" } },
+    { "ph": "X", "name": "JSON.parse", "cat": "v8", "pid": 1, "tid": 1, "ts": 100, "dur": 100, "args": { "url": "/api/session" } },
     { "ph": "?", "name": "something the reader has never seen", "pid": 1, "tid": 1, "ts": 200 }
   ]
 }

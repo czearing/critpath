@@ -5,22 +5,42 @@
 
 use core::marker::PhantomData;
 
-use critpath_core::{Activity, Micros};
+use critpath_core::Micros;
 use fitkit_core::{Answer, Refusal};
 use fitkit_ledger::{Citation, Law};
 
 use crate::{Finding, Observation, CRITICAL_PATH, FORMAT};
 
-/// Refuse while any event in the source went unaccounted for.
+/// Category, name, and what the source said the work was done to.
+type Subject<'a> = (&'a str, &'a str, &'a str);
+
+/// Refuse a rule whose claim the holes in this trace could overturn.
 ///
-/// The gate every rule shares. A rule that finds nothing in a complete trace has proved something;
-/// the same silence over a trace with holes has proved only that the reader dropped events, and
-/// the two are indistinguishable from the outside.
-fn read_everything(observation: &Observation<'_>) -> Answer<()> {
-    if observation.graph.coverage.is_total() {
+/// Not one gate but three, because the holes are not alike. An unknown event threatens everything.
+/// A missing edge can move work onto the chain, so it threatens only claims about membership. Work
+/// still running when the window closed threatens nothing, because it is held open to the end of
+/// the window rather than dropped. Refusing every rule on any hole refuses every real trace, and
+/// trusting them all reports a chain that may not be the chain; itemising is how both are avoided.
+fn intervals_complete(observation: &Observation<'_>) -> Answer<()> {
+    if observation.graph.coverage.unread > 0 {
+        return Err(Refusal::unreported("events in the trace could not be read at all"));
+    }
+    if observation.graph.coverage.intervals_are_complete() {
         Ok(())
     } else {
-        Err(Refusal::unreported("events in the trace were not accounted for"))
+        Err(Refusal::unreported("work in the trace has no known interval"))
+    }
+}
+
+/// Refuse while a missing or contradicted edge could change what is on the chain.
+fn edges_complete(observation: &Observation<'_>) -> Answer<()> {
+    if observation.graph.coverage.unread > 0 {
+        return Err(Refusal::unreported("events in the trace could not be read at all"));
+    }
+    if observation.graph.coverage.edges_are_complete() {
+        Ok(())
+    } else {
+        Err(Refusal::unreported("dependencies in the trace could not all be attached"))
     }
 }
 
@@ -34,8 +54,14 @@ fn has_a_chain(observation: &Observation<'_>) -> Answer<()> {
 
 /// The same work, done twice, on the path that decides the finish.
 ///
-/// Threshold free by construction. It fires on a repeated key, and repetition is a fact about the
-/// trace rather than a judgement about how long something ought to take.
+/// Threshold free by construction. It fires on work repeated *on the same subject*, and that is a
+/// fact about the trace rather than a judgement about how long something ought to take.
+///
+/// Judged on the subject and not the name, because a name repeats for two very different reasons.
+/// A loop that fetches seventy resources runs the same code seventy times and wastes nothing; a
+/// program that fetches one resource twice wasted the second. Only the subject the source recorded
+/// tells them apart, so where the source recorded none this rule has nothing to prove and says
+/// nothing, which is the difference between this and a profile that ranks names by total time.
 #[derive(Debug, Default)]
 pub struct RepeatedWork<'a>(PhantomData<&'a ()>);
 
@@ -48,15 +74,31 @@ impl<'a> Law for RepeatedWork<'a> {
     }
 
     fn admits(&self, observation: &Self::Input) -> Answer<()> {
-        read_everything(observation)?;
-        has_a_chain(observation)
+        // Two activities sharing a key on one real chain is a fact about that chain. A missing
+        // edge elsewhere cannot unmake it, so this rule survives an incomplete edge set.
+        has_a_chain(observation)?;
+        if observation.graph.coverage.unread == 0 {
+            Ok(())
+        } else {
+            Err(Refusal::unreported("events in the trace could not be read at all"))
+        }
     }
 
     fn derive(&self, observation: &Self::Input) -> Answer<Self::Output> {
         let graph = observation.graph;
-        let mut groups: Vec<((&str, &str), Vec<usize>)> = Vec::new();
-        for id in observation.path.activities() {
-            let key = graph.activities[id].key();
+        // Charged in self time, so a repeated task loop is not mistaken for repeated work. A
+        // frame that only encloses other work has no self time, and a claim worth zero is no
+        // claim, so such names drop out without the rule ever having to know one.
+        let self_time = graph.self_times();
+        let on_chain = graph.with_nested(&observation.path.activities().collect::<Vec<_>>());
+        let mut groups: Vec<(Subject<'_>, Vec<usize>)> = Vec::new();
+        for id in on_chain {
+            if self_time[id] == 0 {
+                continue;
+            }
+            let Some(key) = graph.activities[id].identity() else {
+                continue;
+            };
             if let Some(group) = groups.iter_mut().find(|(seen, _)| *seen == key) {
                 group.1.push(id);
             } else {
@@ -70,10 +112,7 @@ impl<'a> Law for RepeatedWork<'a> {
                 key: (key.0.to_owned(), key.1.to_owned()),
                 // Everything after the first occurrence is time the chain spent recomputing what
                 // it already had, so the first is the work and the rest are the cost.
-                cost: occurrences[1..]
-                    .iter()
-                    .map(|&id| graph.activities[id].duration())
-                    .sum::<Micros>(),
+                cost: occurrences[1..].iter().map(|&id| self_time[id]).sum::<Micros>(),
                 occurrences,
             })
             .collect())
@@ -96,7 +135,10 @@ impl<'a> Law for DeadWait<'a> {
     }
 
     fn admits(&self, observation: &Self::Input) -> Answer<()> {
-        read_everything(observation)?;
+        // Claiming the machine was idle requires knowing what every interval was. Work whose end
+        // was never recorded is held open to the window edge, so it is answered for; work whose
+        // start was never recorded is not, and neither is an event nobody could read.
+        intervals_complete(observation)?;
         has_a_chain(observation)
     }
 
@@ -111,11 +153,9 @@ impl<'a> Law for DeadWait<'a> {
             let opened = starts - step.wait_before;
             // Contention is a different problem with a different fix, so the rule only fires when
             // nothing at all was running: an idle machine is always a dependency issued too late.
-            let busy = graph
-                .activities
-                .iter()
-                .filter(|a| Activity::is_informative(a))
-                .any(|a| a.start < starts && a.end > opened);
+            // Censored and concurrent work counts, because a network request in flight explains a
+            // gap that a late dependency would not.
+            let busy = graph.activities.iter().any(|a| a.overlaps(opened, starts));
             if !busy {
                 findings.push(Finding::DeadWait { before: step.activity, cost: step.wait_before });
             }
@@ -140,19 +180,30 @@ impl<'a> Law for OffPath<'a> {
     }
 
     fn admits(&self, observation: &Self::Input) -> Answer<()> {
-        read_everything(observation)
+        // The whole claim is about membership of the chain, which a missing edge can change.
+        intervals_complete(observation)?;
+        edges_complete(observation)
     }
 
     fn derive(&self, observation: &Self::Input) -> Answer<Self::Output> {
-        let Some(longest) = observation.graph.longest() else {
+        // Weighed in self time for the same reason the repeat rule is: the widest bar in a trace
+        // is usually a frame that contains the chain rather than a rival to it, and calling that
+        // off-path would be false. The largest unit of work that is genuinely its own is the one
+        // a ranked profile would put at the top and tell you to go and fix.
+        let self_time = observation.graph.self_times();
+        let Some((longest, &duration)) = self_time
+            .iter()
+            .enumerate()
+            .filter(|&(id, _)| observation.graph.activities[id].is_informative())
+            .max_by_key(|&(_, cost)| cost)
+        else {
             return Ok(Vec::new());
         };
-        if observation.path.holds(longest) {
+        let on_chain =
+            observation.graph.with_nested(&observation.path.activities().collect::<Vec<_>>());
+        if duration == 0 || on_chain.contains(&longest) {
             return Ok(Vec::new());
         }
-        Ok(vec![Finding::OffPath {
-            activity: longest,
-            duration: observation.graph.activities[longest].duration(),
-        }])
+        Ok(vec![Finding::OffPath { activity: longest, duration }])
     }
 }

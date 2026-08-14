@@ -37,6 +37,20 @@ pub struct Activity {
     pub end: Micros,
     /// How far the interval itself is trusted. Zero means it decided nothing.
     pub confidence: Confidence,
+    /// Whether this work may overlap other work on its track.
+    ///
+    /// Asynchronous work is correlated by an identifier rather than by a call stack, so it can
+    /// overlap and can cross threads. Order on a track is therefore not causality for it, and it
+    /// is kept out of serial ordering: only a stated flow may put it on a chain.
+    pub concurrent: bool,
+    /// What the source said this work was done *to*, if it said anything.
+    ///
+    /// The difference between a loop and a repeat. A name alone cannot tell them apart, because a
+    /// request loop that fetches seventy different resources reports the same name seventy times
+    /// and is doing seventy different things. What the source recorded alongside the name -- the
+    /// url, the script, the file -- is the only evidence in a trace that two intervals did the
+    /// same work rather than the same kind of work.
+    pub subject: Option<String>,
 }
 
 impl Activity {
@@ -47,15 +61,88 @@ impl Activity {
 
     /// The key repetition is judged on: what ran, not when or where it ran.
     ///
-    /// Two activities sharing a key are the same work done twice. Track and timing are excluded
+    /// Two activities sharing a key are the same *kind* of work. Track and timing are excluded
     /// deliberately, since the same call on another thread is still the same call.
     pub fn key(&self) -> (&str, &str) {
         (self.category.as_str(), self.name.as_str())
     }
 
+    /// The key redundancy is judged on: the same work, on the same thing.
+    ///
+    /// [`None`] when the source recorded no subject, and a rule that cannot form this key must
+    /// stay silent rather than fall back to the name. Naming alone would convict every loop in
+    /// every program of repeating itself.
+    pub fn identity(&self) -> Option<(&str, &str, &str)> {
+        self.subject.as_deref().map(|subject| (self.category.as_str(), self.name.as_str(), subject))
+    }
+
     /// Whether the interval can support a decision.
     pub fn is_informative(&self) -> bool {
         !self.confidence.is_zero() && self.end > self.start
+    }
+
+    /// Whether the machine was busy with this work at any point between `from` and `to`.
+    ///
+    /// Deliberately looser than [`Activity::is_informative`]. Work whose end was never recorded
+    /// cannot join a chain, but it was still running, and a rule that claims the machine was idle
+    /// has to answer for it.
+    pub fn overlaps(&self, from: Micros, to: Micros) -> bool {
+        self.start < to && self.end > from && self.end > self.start
+    }
+}
+
+/// What the reader could not account for.
+///
+/// Load bearing, and deliberately itemised. A hole and a healthy trace produce the same findings,
+/// so the holes are counted and carried rather than dropped. They are kept apart by *what they
+/// threaten*, because an observation window that closed mid-flight is missing evidence while an
+/// event the reader could not read is ignorance, and treating the two alike either refuses every
+/// real trace or trusts one it should not.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Coverage {
+    /// Events the reader did not understand at all.
+    ///
+    /// Threatens everything. An unknown event could be any work, anywhere.
+    pub unread: usize,
+    /// Ends whose matching begin was never seen, so the work has no known start.
+    pub unpaired: usize,
+    /// Flow endpoints that fell outside every activity, so the edge could not be attached.
+    ///
+    /// Threatens chain membership: a missing edge can move work onto the chain.
+    pub unbound_flows: usize,
+    /// Dependencies the clock denies: the source said one activity waited on another that had not
+    /// started yet.
+    pub contradicted: usize,
+    /// Work that had not finished when the trace stopped.
+    ///
+    /// Threatens nothing, because it is handled rather than ignored: the interval is held open to
+    /// the end of the observation window, which is the most that can be claimed and never less
+    /// than the truth. Counted so the report can say the window closed on live work.
+    pub censored: usize,
+}
+
+impl Coverage {
+    /// Whether every event in the source was accounted for.
+    pub fn is_total(&self) -> bool {
+        self.holes() == 0
+    }
+
+    /// Number of unaccounted events. Censored work is accounted for, so it is not counted here.
+    pub fn holes(&self) -> usize {
+        self.unread + self.unpaired + self.unbound_flows + self.contradicted
+    }
+
+    /// Whether anything threatens a claim about which work was running.
+    ///
+    /// Censored work is excluded: it is held open to the end of the window, so a rule asking
+    /// whether the machine was busy already sees it.
+    pub fn intervals_are_complete(&self) -> bool {
+        self.unread == 0 && self.unpaired == 0
+    }
+
+    /// Whether anything threatens a claim about which work is on the chain.
+    pub fn edges_are_complete(&self) -> bool {
+        self.unread == 0 && self.unbound_flows == 0 && self.contradicted == 0
     }
 }
 
@@ -81,35 +168,9 @@ pub struct Edge {
 
 /// What the reader could not account for.
 ///
-/// Load bearing. A hole in the trace and a healthy trace produce the same findings, so the holes
-/// are counted and carried rather than dropped, and a verdict is refused while any remain.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Coverage {
-    /// Begin events that never received a matching end.
-    pub unpaired: usize,
-    /// Flow endpoints that fell outside every activity, so the edge could not be attached.
-    pub unbound_flows: usize,
-    /// Events the reader did not understand at all.
-    pub unread: usize,
-    /// Dependencies the clock denies: the source said one activity waited on another that had not
-    /// started yet.
-    ///
-    /// Counted rather than dropped. Either the trace is inconsistent or the reader attached an
-    /// endpoint to the wrong activity, and both mean a rule could be looking at the wrong chain.
-    pub contradicted: usize,
-}
-
-impl Coverage {
-    /// Whether every event in the source was accounted for.
-    pub fn is_total(&self) -> bool {
-        self.unpaired == 0 && self.unbound_flows == 0 && self.unread == 0 && self.contradicted == 0
-    }
-
-    /// Number of unaccounted events.
-    pub fn holes(&self) -> usize {
-        self.unpaired + self.unbound_flows + self.unread + self.contradicted
-    }
-}
+/// Superseded by the itemised [`Coverage`] above.
+#[doc(hidden)]
+pub type CoverageAlias = Coverage;
 
 /// Activities and the dependencies between them.
 #[derive(Clone, Debug, Default)]
@@ -123,6 +184,28 @@ pub struct Graph {
 }
 
 impl Graph {
+    /// Activity indices grouped by track, each group ordered by start then by longest first.
+    ///
+    /// Built once and shared. Every question about nesting, ordering or what encloses a moment is
+    /// answered inside one track, and a real trace holds enough activities that asking those
+    /// questions against the whole list is the difference between a second and an hour.
+    pub fn by_track(&self) -> Vec<(Track, Vec<ActivityId>)> {
+        let mut groups: Vec<(Track, Vec<ActivityId>)> = Vec::new();
+        let mut order: Vec<ActivityId> = (0..self.activities.len()).collect();
+        order.sort_unstable_by_key(|&id| {
+            let activity = &self.activities[id];
+            (activity.track, activity.start, core::cmp::Reverse(activity.end))
+        });
+        for id in order {
+            let track = self.activities[id].track;
+            match groups.last_mut() {
+                Some((seen, group)) if *seen == track => group.push(id),
+                _ => groups.push((track, vec![id])),
+            }
+        }
+        groups
+    }
+
     /// Distinct tracks the activities ran on.
     pub fn tracks(&self) -> Vec<Track> {
         let mut seen: Vec<Track> = self.activities.iter().map(|a| a.track).collect();
@@ -144,5 +227,78 @@ impl Graph {
             .filter(|(_, a)| a.is_informative())
             .max_by_key(|(_, a)| a.duration())
             .map(|(id, _)| id)
+    }
+
+    /// Time each activity spent doing something other than waiting on work nested inside it.    ///
+    /// The difference between a thing that ran and a thing that did something. A task loop, a
+    /// dispatcher or any other frame encloses the work it calls, so its interval already contains
+    /// that work's cost; charging it again counts the same microsecond twice and makes the most
+    /// generic name in the trace look like the most expensive. Self time is a fact about the
+    /// intervals, not a judgement about which names are wrappers, so it separates the two without
+    /// knowing anything about the framework, the runtime or the language that produced them.
+    ///
+    /// Nesting is read per track, since only work on one track can enclose other work. Concurrent
+    /// intervals are allowed to overlap by the format, so they enclose nothing and are charged
+    /// their whole duration.
+    pub fn self_times(&self) -> Vec<Micros> {
+        let mut self_time: Vec<Micros> =
+            self.activities.iter().map(|a| a.duration().max(0)).collect();
+        for (_, ids) in self.by_track() {
+            // Sorted by start then by widest first, so a parent is always seen before its
+            // children and the stack top is the innermost interval still open.
+            let mut stack: Vec<ActivityId> = Vec::new();
+            for id in ids {
+                let here = &self.activities[id];
+                if here.concurrent {
+                    continue;
+                }
+                while stack.last().is_some_and(|&open| self.activities[open].end <= here.start) {
+                    stack.pop();
+                }
+                if let Some(&parent) = stack.last() {
+                    // Only the part of the child that actually lies inside the parent is the
+                    // parent's to discount, so a child overhanging its parent cannot drive the
+                    // parent's self time below zero.
+                    let inside = here.end.min(self.activities[parent].end) - here.start;
+                    self_time[parent] = (self_time[parent] - inside.max(0)).max(0);
+                }
+                stack.push(id);
+            }
+        }
+        self_time
+    }
+
+    /// The given activities together with everything that ran nested inside them.
+    ///
+    /// Work nested inside a chain step ran because that step ran, so it is on the chain as surely
+    /// as the step is. Without this a chain made of task frames contains no work at all, and every
+    /// rule that reads the chain goes quiet on exactly the traces that matter most.
+    pub fn with_nested(&self, roots: &[ActivityId]) -> Vec<ActivityId> {
+        let mut included = vec![false; self.activities.len()];
+        for &id in roots {
+            if let Some(slot) = included.get_mut(id) {
+                *slot = true;
+            }
+        }
+        for (_, ids) in self.by_track() {
+            let mut stack: Vec<ActivityId> = Vec::new();
+            for id in ids {
+                let here = &self.activities[id];
+                if here.concurrent {
+                    continue;
+                }
+                while stack.last().is_some_and(|&open| self.activities[open].end <= here.start) {
+                    stack.pop();
+                }
+                if stack.last().is_some_and(|&parent| included[parent]) {
+                    included[id] = true;
+                }
+                stack.push(id);
+            }
+        }
+        let mut all: Vec<ActivityId> =
+            (0..self.activities.len()).filter(|&id| included[id]).collect();
+        all.sort_by_key(|&id| self.activities[id].start);
+        all
     }
 }

@@ -1,0 +1,9 @@
+{
+  "traceEvents": [
+    { "ph": "M", "name": "thread_name", "pid": 3, "tid": 3, "args": { "name": "main" } },
+    { "ph": "X", "name": "boot", "cat": "app", "pid": 3, "tid": 3, "ts": 0, "dur": 500 },
+    { "ph": "B", "name": "serve", "cat": "app", "pid": 3, "tid": 3, "ts": 500 },
+    { "ph": "X", "name": "route", "cat": "app", "pid": 3, "tid": 3, "ts": 600, "dur": 700 },
+    { "ph": "b", "name": "ResourceFetch", "cat": "loading", "pid": 3, "tid": 3, "ts": 700, "id": "0x1" }
+  ]
+}

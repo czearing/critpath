@@ -1,0 +1,14 @@
+{
+  "traceEvents": [
+    { "ph": "M", "name": "thread_name", "pid": 2, "tid": 2, "args": { "name": "main" } },
+
+    { "ph": "X", "name": "Task", "cat": "sched", "pid": 2, "tid": 2, "ts": 0, "dur": 3000 },
+    { "ph": "X", "name": "Compile", "cat": "vm", "pid": 2, "tid": 2, "ts": 0, "dur": 3000, "args": { "script": "app.js" } },
+
+    { "ph": "X", "name": "Task", "cat": "sched", "pid": 2, "tid": 2, "ts": 3000, "dur": 4000 },
+    { "ph": "X", "name": "Compile", "cat": "vm", "pid": 2, "tid": 2, "ts": 3000, "dur": 4000, "args": { "script": "app.js" } },
+
+    { "ph": "X", "name": "Task", "cat": "sched", "pid": 2, "tid": 2, "ts": 7000, "dur": 2000 },
+    { "ph": "X", "name": "Emit", "cat": "vm", "pid": 2, "tid": 2, "ts": 7000, "dur": 2000 }
+  ]
+}

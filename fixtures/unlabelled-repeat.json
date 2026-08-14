@@ -1,0 +1,9 @@
+{
+  "traceEvents": [
+    { "ph": "M", "name": "thread_name", "pid": 6, "tid": 6, "args": { "name": "main" } },
+
+    { "ph": "X", "name": "step", "cat": "app", "pid": 6, "tid": 6, "ts": 0, "dur": 1000 },
+    { "ph": "X", "name": "step", "cat": "app", "pid": 6, "tid": 6, "ts": 1000, "dur": 1000 },
+    { "ph": "X", "name": "step", "cat": "app", "pid": 6, "tid": 6, "ts": 2000, "dur": 1000 }
+  ]
+}

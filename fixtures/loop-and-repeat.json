@@ -1,0 +1,12 @@
+{
+  "traceEvents": [
+    { "ph": "M", "name": "thread_name", "pid": 4, "tid": 4, "args": { "name": "main" } },
+
+    { "ph": "X", "name": "fetch", "cat": "net", "pid": 4, "tid": 4, "ts": 0, "dur": 1000, "args": { "url": "/a.js" } },
+    { "ph": "X", "name": "fetch", "cat": "net", "pid": 4, "tid": 4, "ts": 1000, "dur": 1000, "args": { "url": "/b.js" } },
+    { "ph": "X", "name": "fetch", "cat": "net", "pid": 4, "tid": 4, "ts": 2000, "dur": 1000, "args": { "url": "/c.js" } },
+
+    { "ph": "X", "name": "parse", "cat": "vm", "pid": 4, "tid": 4, "ts": 3000, "dur": 2000, "args": { "file": "/a.js" } },
+    { "ph": "X", "name": "parse", "cat": "vm", "pid": 4, "tid": 4, "ts": 5000, "dur": 2000, "args": { "file": "/a.js" } }
+  ]
+}

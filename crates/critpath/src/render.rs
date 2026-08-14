@@ -58,11 +58,19 @@ pub fn report(analysis: &Analysis, repair: Option<&Repair>) -> String {
         );
     }
 
-    if analysis.findings.is_empty() {
-        let _ = writeln!(out, "\nNothing on the chain is provably wasted.");
+    if analysis.findings().is_empty() {
+        let _ = writeln!(
+            out,
+            "\n{}",
+            if analysis.proof.is_conclusive() {
+                "Nothing on the chain is provably wasted."
+            } else {
+                "Nothing was proved, and not every rule was able to look."
+            },
+        );
     } else {
         let _ = writeln!(out, "\nWhat is provably wrong:");
-        for finding in &analysis.findings {
+        for finding in analysis.findings() {
             let _ = writeln!(out, "  {}", sentence(analysis, finding));
         }
     }
@@ -71,11 +79,25 @@ pub fn report(analysis: &Analysis, repair: Option<&Repair>) -> String {
         let _ = writeln!(out, "\n{}", plan(analysis, repair));
     }
 
-    if !analysis.coverage.is_total() {
+    for silence in &analysis.proof.silent {
+        let _ = writeln!(out, "\nNot checked: {} — {}.", silence.rule, silence.because);
+    }
+
+    let holes = &analysis.coverage;
+    if holes.censored > 0 {
         let _ = writeln!(
             out,
-            "\n{} events were not accounted for, so no rule was allowed to run over this trace.",
-            analysis.coverage.holes(),
+            "\n{} activities were still running when the trace stopped; each is counted as \
+             running to the end of the recording, which is the least it can have done.",
+            holes.censored,
+        );
+    }
+    if !holes.is_total() {
+        let _ = writeln!(
+            out,
+            "Unaccounted: {} unreadable, {} without a start, {} dependencies unattached, {} \
+             denied by the clock.",
+            holes.unread, holes.unpaired, holes.unbound_flows, holes.contradicted,
         );
     }
     out
@@ -84,7 +106,9 @@ pub fn report(analysis: &Analysis, repair: Option<&Repair>) -> String {
 fn sentence(analysis: &Analysis, finding: &Finding) -> String {
     match finding {
         Finding::RepeatedWork { key, occurrences, cost } => format!(
-            "{} ran {} times on the chain; the repeats cost {}. Doing it once is worth that much.",
+            "{} ran {} times on the chain against a subject the source described identically each \
+             time, costing {} after the first. Whether the later runs could have reused the first \
+             is a fact about the code, not about this trace.",
             if key.1.is_empty() { "unnamed work" } else { &key.1 },
             occurrences.len(),
             micros(*cost),
@@ -115,7 +139,7 @@ fn plan(analysis: &Analysis, repair: &Repair) -> String {
         if repair.proven { " and proven optimal" } else { " (beam search, not proven optimal)" },
     );
     for &index in &repair.chosen {
-        let _ = writeln!(out, "  {}", sentence(analysis, &analysis.findings[index]));
+        let _ = writeln!(out, "  {}", sentence(analysis, &analysis.proof.findings[index]));
     }
     out
 }
