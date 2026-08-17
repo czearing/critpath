@@ -496,3 +496,42 @@ fn a_handoff_that_lands_in_dead_time_stays_unattached() {
         "the endpoint that could not be placed is reported, not quietly absorbed",
     );
 }
+
+#[test]
+fn a_value_two_different_things_share_is_not_an_identity() {
+    // Three timers were all set to 30ms. Pairing on the duration fuses them into one interval
+    // reaching from the first install to the last, which is narrower than the recording and so
+    // prices itself as trustworthy -- span alone cannot catch it.
+    //
+    // Two defences are needed, and this fixture pins both. Supersession drops a fused group whose
+    // every moment is already explained by a narrower one, but it declines to act while any moment
+    // would be left unexplained -- and the third timer installs without ever firing, so its own id
+    // is a lone mark and no interval at all. That is the case that survives on a real trace. It is
+    // caught instead by the two bounding moments contradicting each other: they state different
+    // timer ids, so the producer's own words refute the claim that they bound one thing's life.
+    let analysis = analyse(&fixture("shared-attribute.json")).unwrap();
+    let named = |name: &str| -> Vec<i64> {
+        analysis
+            .graph
+            .activities
+            .iter()
+            .filter(|a| a.inferred && a.name == name)
+            .map(critpath_core::Activity::duration)
+            .collect()
+    };
+    assert!(
+        named("data.timeout").is_empty(),
+        "a duration two timers share must not become one interval: {:?}",
+        named("data.timeout"),
+    );
+    let timers = named("data.timerId");
+    assert!(
+        timers.contains(&1_000) && timers.contains(&5_000),
+        "each timer keeps its own measured life: {timers:?}",
+    );
+    assert_eq!(
+        named("data.requestId"),
+        vec![60_000],
+        "a genuine identity is not superseded: nothing else explains both of its moments",
+    );
+}

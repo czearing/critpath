@@ -1,0 +1,26 @@
+{
+  "traceEvents": [
+    { "ph": "M", "name": "thread_name", "pid": 1, "tid": 1, "args": { "name": "main" } },
+
+    { "ph": "X", "name": "Boot", "cat": "app", "pid": 1, "tid": 1, "ts": 0, "dur": 10000 },
+    { "ph": "X", "name": "Render", "cat": "gfx", "pid": 1, "tid": 1, "ts": 100000, "dur": 10000 },
+
+    { "ph": "I", "name": "TimerInstall", "cat": "devtools.timeline", "s": "t", "pid": 1, "tid": 1, "ts": 1000,
+      "args": { "data": { "timerId": 1, "timeout": 30, "singleShot": true } } },
+    { "ph": "I", "name": "TimerFire", "cat": "devtools.timeline", "s": "t", "pid": 1, "tid": 1, "ts": 2000,
+      "args": { "data": { "timerId": 1 } } },
+
+    { "ph": "I", "name": "TimerInstall", "cat": "devtools.timeline", "s": "t", "pid": 1, "tid": 1, "ts": 90000,
+      "args": { "data": { "timerId": 2, "timeout": 30, "singleShot": true } } },
+    { "ph": "I", "name": "TimerFire", "cat": "devtools.timeline", "s": "t", "pid": 1, "tid": 1, "ts": 95000,
+      "args": { "data": { "timerId": 2 } } },
+
+    { "ph": "I", "name": "TimerInstall", "cat": "devtools.timeline", "s": "t", "pid": 1, "tid": 1, "ts": 105000,
+      "args": { "data": { "timerId": 3, "timeout": 30, "singleShot": true } } },
+
+    { "ph": "I", "name": "ResourceSendRequest", "cat": "devtools.timeline", "s": "t", "pid": 1, "tid": 1, "ts": 20000,
+      "args": { "data": { "requestId": "r-1", "url": "https://example.test/slow.js" } } },
+    { "ph": "I", "name": "ResourceFinish", "cat": "devtools.timeline", "s": "t", "pid": 1, "tid": 1, "ts": 80000,
+      "args": { "data": { "requestId": "r-1", "encodedDataLength": 5 } } }
+  ]
+}

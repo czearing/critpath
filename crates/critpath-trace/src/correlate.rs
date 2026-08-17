@@ -64,14 +64,11 @@ struct Group {
     closed_by: usize,
 }
 
-/// Recover intervals from marks, and add them to the graph.
+/// Collect every moment that states the same field value in the same scope into one group.
 ///
-/// `opens` and `closes` bound the recording, and are what each group's span is judged against.
-pub fn intervals(graph: &mut Graph, marks: &[Mark], opens: Micros, closes: Micros) {
-    let window = closes.saturating_sub(opens).max(0);
-    // Keys borrow from the marks rather than being built. A real trace holds a quarter of a
-    // million field observations, and formatting a key for each is most of the cost of reading
-    // them at all.
+/// Keys borrow from the marks rather than being built. A real trace holds a quarter of a million
+/// field observations, and formatting a key for each is most of the cost of reading them at all.
+fn gather(marks: &[Mark]) -> Vec<Group> {
     let mut index: HashMap<(&str, &str, &str), usize> = HashMap::new();
     let mut groups: Vec<Group> = Vec::new();
 
@@ -108,10 +105,47 @@ pub fn intervals(graph: &mut Graph, marks: &[Mark], opens: Micros, closes: Micro
         }
     }
 
+    groups
+}
+
+/// Recover intervals from marks, and add them to the graph.
+///
+/// `opens` and `closes` bound the recording, and are what each group's span is judged against.
+pub fn intervals(graph: &mut Graph, marks: &[Mark], opens: Micros, closes: Micros) {
+    let window = closes.saturating_sub(opens).max(0);
+    let groups = gather(marks);
+
     for group in groups {
         // One mark is a moment, not an interval: it states when something happened and nothing
         // about how long it took. Two marks are the least that can bound a duration.
         if group.marks < 2 || group.last <= group.first {
+            continue;
+        }
+        // The two moments that bound the interval must not contradict each other.
+        //
+        // A field can be shared by several distinct things -- a duration two different timers were
+        // both set to, a status two unrelated transfers both returned -- and pairing on it fuses
+        // them into one interval reaching from the first thing to the last. Span cannot detect
+        // this: the fused interval is narrower than the recording, so it prices itself as
+        // trustworthy, and on a real trace one such fusion outranked every genuine transfer.
+        //
+        // The whole measurement rests on the claim that these two marks are the beginning and the
+        // end of one thing's life. If they both record a field and disagree about its value, that
+        // claim is already refuted by the producer's own words: whatever the reader paired them
+        // on, they describe two different things. A genuine transfer survives because its send and
+        // its finish share only what identifies it.
+        //
+        // This reads nothing but the evidence the interval is built from, so it needs no
+        // reservation. Judging a group against the other explanations of the same moments was
+        // tried first and is not kept: it declines to drop a group while any of its moments would
+        // be left unexplained, which is exactly the real case -- a timer that installs but never
+        // fires -- and on the real trace it changed no finding this test does not already catch.
+        let starting = &marks[group.opened_by].fields;
+        let ending = &marks[group.closed_by].fields;
+        let contradicted = starting.iter().any(|(field, value)| {
+            ending.iter().any(|(other, seen)| other == field && seen != value)
+        });
+        if contradicted {
             continue;
         }
         // How much of the recording this group claims. A thing that happened occupies part of the
