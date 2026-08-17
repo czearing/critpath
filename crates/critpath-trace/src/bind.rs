@@ -35,6 +35,14 @@ impl<'a> Reach<'a> {
     /// did state, which then reads as a hole the trace does not have. Only work whose own extent
     /// was never observed is excluded, because its end was chosen by this reader rather than
     /// reported, and a dependency must not rest on an interval nobody measured.
+    ///
+    /// An inferred interval is excluded for the same reason, and it is worth being explicit about
+    /// what is given up. Admitting them attaches 510 further endpoints in a real browser trace,
+    /// which is tempting because it silences a refusal. It is still wrong: a flow endpoint that
+    /// happens to fall between a request's first and last mark was not necessarily issued by that
+    /// request, and an edge asserted on coincidence in time is exactly the spurious edge that
+    /// makes a longest-path decode serialise work that ran in parallel. The hole is real and is
+    /// reported as a hole.
     fn enclosing(&self, at: i64) -> Option<ActivityId> {
         let mut index = self.ids.partition_point(|&id| self.activities[id].start <= at);
         while index > 0 {
@@ -44,7 +52,11 @@ impl<'a> Reach<'a> {
             }
             let id = self.ids[index];
             let activity = &self.activities[id];
-            if activity.start <= at && at <= activity.end && !activity.confidence.is_zero() {
+            if activity.start <= at
+                && at <= activity.end
+                && !activity.confidence.is_zero()
+                && !activity.inferred
+            {
                 return Some(id);
             }
         }
@@ -58,7 +70,10 @@ impl<'a> Reach<'a> {
     /// usually nothing, since the point of the handoff is that the machine was free to take it.
     fn next_after(&self, at: i64) -> Option<ActivityId> {
         let start = self.ids.partition_point(|&id| self.activities[id].start < at);
-        self.ids[start..].iter().copied().find(|&id| !self.activities[id].confidence.is_zero())
+        self.ids[start..]
+            .iter()
+            .copied()
+            .find(|&id| !self.activities[id].confidence.is_zero() && !self.activities[id].inferred)
     }
 }
 
@@ -150,6 +165,7 @@ mod tests {
             confidence: Confidence::FULL,
             concurrent,
             subject: None,
+            inferred: false,
         }
     }
 

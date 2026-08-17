@@ -51,6 +51,14 @@ pub struct Activity {
     /// url, the script, the file -- is the only evidence in a trace that two intervals did the
     /// same work rather than the same kind of work.
     pub subject: Option<String>,
+    /// Whether the extent was correlated from separate moments rather than reported as an interval.
+    ///
+    /// A producer that records a lifetime as a start mark and a finish mark states a duration
+    /// without ever stating an interval. Recovering it is worth doing, but the result is weaker
+    /// evidence than an interval the source measured itself, and the two must never be confused.
+    /// A rule that ranks magnitude -- "the largest thing here" -- may only weigh what was
+    /// observed, because an inferred extent competes on a footing it did not earn.
+    pub inferred: bool,
 }
 
 impl Activity {
@@ -79,6 +87,19 @@ impl Activity {
     /// Whether the interval can support a decision.
     pub fn is_informative(&self) -> bool {
         !self.confidence.is_zero() && self.end > self.start
+    }
+
+    /// Whether the interval may take part in deciding the chain.
+    ///
+    /// Stricter than [`Activity::is_informative`], and the distinction is load bearing. An extent
+    /// correlated from separate moments is a real measurement and rules may read it, but a chain
+    /// is an account of what caused the finish, and this reader inferred the correlation rather
+    /// than the source stating it. Barring it from edges is not enough on its own: a longest path
+    /// is a maximum, so a single wide inferred interval can be a chain all by itself, with no
+    /// dependency needed. That is exactly how a correlation spanning the recording would come to
+    /// be reported as the reason a program was slow.
+    pub fn decides(&self) -> bool {
+        self.is_informative() && !self.inferred
     }
 
     /// Whether the machine was busy with this work at any point between `from` and `to`.
@@ -206,9 +227,16 @@ impl Graph {
         groups
     }
 
-    /// Distinct tracks the activities ran on.
+    /// Distinct tracks that observed work ran on.
+    ///
+    /// Inferred intervals are excluded. They are not work on a track -- they are moments the
+    /// producer recorded, correlated after the fact -- and they are already barred from serial
+    /// ordering and from stating any dependency. Counting them as tracks would mean a trace whose
+    /// network marks came from another process suddenly had several tracks with no order between
+    /// them, and a reader would refuse a trace it had understood perfectly well a moment earlier.
     pub fn tracks(&self) -> Vec<Track> {
-        let mut seen: Vec<Track> = self.activities.iter().map(|a| a.track).collect();
+        let mut seen: Vec<Track> =
+            self.activities.iter().filter(|a| !a.inferred).map(|a| a.track).collect();
         seen.sort_unstable();
         seen.dedup();
         seen

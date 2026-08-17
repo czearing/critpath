@@ -39,8 +39,12 @@ pub enum Finding {
     /// Repetition on the chain is waste by definition: the second occurrence delayed the finish
     /// and produced what the first already had.
     RepeatedWork {
-        /// Category and name shared by the occurrences.
-        key: (String, String),
+        /// Category, name, and what the source said the work was done to.
+        ///
+        /// The subject is carried into the finding rather than dropped, because it is the only
+        /// part a person can act on: the name says a resource was appended to, the subject says
+        /// which file it was.
+        key: (String, String, String),
         /// Where they were, in chain order.
         occurrences: Vec<ActivityId>,
         /// Time the repeats added to the chain.
@@ -83,6 +87,25 @@ pub enum Finding {
         /// can only take room away.
         room: Micros,
     },
+    /// Something was in flight while the chain sat waiting.
+    ///
+    /// The finding that turns a wait into a subject. A chain can spend seconds waiting while every
+    /// rule about work stays silent, because nothing was running to blame -- and the report then
+    /// says only that the program waited, which no one can act on.
+    ///
+    /// What is proved here is overlap and nothing more: this work was in flight across that much
+    /// of the chain's waiting. Whether the chain was waiting *for* it is a claim the trace does not
+    /// make, because no dependency between them was ever stated, so it carries no cost and can
+    /// never be selected as a repair. It is reported because a person who knows what the work was
+    /// can settle in seconds a question the trace cannot settle at all.
+    WaitedWhileInFlight {
+        /// The work that was in flight.
+        during: ActivityId,
+        /// How much of the chain's waiting it covered.
+        overlap: Micros,
+        /// How many separate waits on the chain it spanned.
+        waits: usize,
+    },
 }
 
 impl Finding {
@@ -92,7 +115,20 @@ impl Finding {
     pub fn cost(&self) -> Micros {
         match self {
             Self::RepeatedWork { cost, .. } | Self::DeadWait { cost, .. } => *cost,
-            Self::OffPath { .. } => 0,
+            Self::OffPath { .. } | Self::WaitedWhileInFlight { .. } => 0,
+        }
+    }
+
+    /// The magnitude the finding's own sentence quotes.
+    ///
+    /// Used only to order a report, never to claim a saving. Two findings that cost the chain
+    /// nothing provable are still not equally interesting, and without this the largest thing in
+    /// the trace prints below the smallest.
+    pub fn evidence(&self) -> Micros {
+        match self {
+            Self::RepeatedWork { cost, .. } | Self::DeadWait { cost, .. } => *cost,
+            Self::OffPath { duration, .. } => *duration,
+            Self::WaitedWhileInFlight { overlap, .. } => *overlap,
         }
     }
 }
@@ -147,9 +183,16 @@ pub fn findings(observation: Observation<'_>) -> Proof {
     ask_into(&laws::RepeatedWork::default(), &observation, "repeated work", &mut proof);
     ask_into(&laws::DeadWait::default(), &observation, "dead wait", &mut proof);
     ask_into(&laws::OffPath::default(), &observation, "off-path dominance", &mut proof);
+    ask_into(
+        &laws::WaitedWhileInFlight::default(),
+        &observation,
+        "in flight while waiting",
+        &mut proof,
+    );
     // Ordered by what each costs the chain, because a report that leads with the cheapest finding
-    // makes the reader do the ranking the tool exists to do.
-    proof.findings.sort_by_key(|finding| core::cmp::Reverse(finding.cost()));
+    // makes the reader do the ranking the tool exists to do. Where nothing is provably owed, the
+    // larger measurement leads, so proof still outranks magnitude and magnitude outranks nothing.
+    proof.findings.sort_by_key(|finding| core::cmp::Reverse((finding.cost(), finding.evidence())));
     proof
 }
 

@@ -11,6 +11,7 @@ use fitkit_core::Confidence;
 use serde_json::Value;
 
 mod bind;
+mod correlate;
 mod read;
 
 pub use read::ParseError;
@@ -19,8 +20,10 @@ pub use read::ParseError;
 const INTERVAL: [&str; 3] = ["X", "B", "E"];
 /// Phases that carry an interval correlated by identity, which may overlap and cross threads.
 const ASYNC: [&str; 2] = ["b", "e"];
+/// Phases that mark a moment rather than an interval.
+const INSTANT: [&str; 2] = ["I", "i"];
 /// Phases understood to carry neither an interval nor an edge. Skipping them is not a hole.
-const IGNORED: [&str; 7] = ["M", "i", "I", "c", "C", "n", "R"];
+const IGNORED: [&str; 5] = ["M", "c", "C", "n", "R"];
 /// Phases that state a dependency.
 const FLOW: [&str; 3] = ["s", "t", "f"];
 
@@ -67,7 +70,9 @@ pub fn read(bytes: &[u8]) -> Result<Graph, ParseError> {
     let mut open: Vec<Open> = Vec::new();
     let mut open_async: Vec<(String, Open)> = Vec::new();
     let mut flows: Vec<FlowPoint> = Vec::new();
+    let mut marks: Vec<correlate::Mark> = Vec::new();
     let mut window_closes = Micros::MIN;
+    let mut window_opens = Micros::MAX;
 
     for event in &events {
         let Some(phase) = event.get("ph").and_then(Value::as_str) else {
@@ -79,6 +84,20 @@ pub fn read(bytes: &[u8]) -> Result<Graph, ParseError> {
             window_closes = window_closes.max(ts.saturating_add(dur));
         }
         if IGNORED.contains(&phase) {
+            continue;
+        }
+        // The recording opens at the first event that carries work, not at the first event in the
+        // file. Metadata is conventionally stamped at zero, and letting it set the start would
+        // stretch the window across the machine's whole uptime and make every span look
+        // negligible against it.
+        if let Some(ts) = read::at(event) {
+            window_opens = window_opens.min(ts);
+        }
+        if INSTANT.contains(&phase) {
+            match read::mark(event) {
+                Some(mark) => marks.push(mark),
+                None => graph.coverage.unread += 1,
+            }
             continue;
         }
         if FLOW.contains(&phase) {
@@ -107,6 +126,10 @@ pub fn read(bytes: &[u8]) -> Result<Graph, ParseError> {
         push(&mut graph, held, window_closes, Confidence::ZERO, false);
         graph.coverage.censored += 1;
     }
+
+    // Marks become intervals only after every interval is known, because a group's trustworthiness
+    // is judged against the extent of the recording, which is not known until the end of it.
+    correlate::intervals(&mut graph, &marks, window_opens, window_closes);
 
     graph.edges.extend(bind::serial(&graph));
     let (flow_edges, unbound) = bind::flows(&graph, &flows);
@@ -137,6 +160,7 @@ fn push(
         confidence,
         concurrent,
         subject: held.subject,
+        inferred: false,
     });
     graph.activities.len() - 1
 }

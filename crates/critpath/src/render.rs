@@ -103,13 +103,28 @@ pub fn report(analysis: &Analysis, repair: Option<&Repair>) -> String {
     out
 }
 
+/// What the source recorded about the work, written out rather than thrown away.
+///
+/// The difference between a report that names a C++ symbol and one that names the file you would
+/// open. The reader already keeps every argument the producer wrote; printing it is what lets a
+/// finding say which script, which url, which asset. No field is looked for by name here, because
+/// the moment this code knows that "url" is special it knows one producer and is useless to the
+/// next; whatever the emitter thought worth recording is simply shown.
+fn described(subject: &str) -> String {
+    if subject.is_empty() {
+        return String::new();
+    }
+    format!(" ({})", subject.split('\u{1}').collect::<Vec<_>>().join(", "))
+}
+
 fn sentence(analysis: &Analysis, finding: &Finding) -> String {
     match finding {
         Finding::RepeatedWork { key, occurrences, cost } => format!(
-            "{} ran {} times on the chain against a subject the source described identically each \
-             time, costing {} after the first. Whether the later runs could have reused the first \
-             is a fact about the code, not about this trace.",
+            "{}{} ran {} times on the chain against a subject the source described identically \
+             each time, costing {} after the first. Whether the later runs could have reused the \
+             first is a fact about the code, not about this trace.",
             if key.1.is_empty() { "unnamed work" } else { &key.1 },
+            described(&key.2),
             occurrences.len(),
             micros(*cost),
         ),
@@ -131,12 +146,36 @@ fn sentence(analysis: &Analysis, finding: &Finding) -> String {
             )
         }
         Finding::OffPath { activity, duration, room } => format!(
-            "The largest activity, {} at {}, is not on the chain: deleting it entirely would not \
+            "The largest activity, {}{} at {}, is not on the chain: deleting it entirely would not \
              move the finish, and it has at most {} of room before it becomes the constraint.",
             analysis.graph.activities[*activity].name,
+            described(analysis.graph.activities[*activity].subject.as_deref().unwrap_or_default()),
             micros(*duration),
             micros(*room),
         ),
+        Finding::WaitedWhileInFlight { during, overlap, waits } => {
+            let activity = &analysis.graph.activities[*during];
+            format!(
+                "{}{} was in flight for {} of the chain's waiting, across {} separate {}. The \
+                 trace states no dependency between them, so this is overlap in time and not \
+                 proof of cause; it is reported because it is the only named thing the chain was \
+                 waiting alongside.{}",
+                if activity.name.is_empty() { "unnamed work" } else { &activity.name },
+                described(activity.subject.as_deref().unwrap_or_default()),
+                micros(*overlap),
+                waits,
+                if *waits == 1 { "wait" } else { "waits" },
+                if activity.inferred {
+                    format!(
+                        " Its extent was correlated from separate moments rather than measured as \
+                         one interval, so it is trusted at {}.",
+                        activity.confidence,
+                    )
+                } else {
+                    String::new()
+                },
+            )
+        }
     }
 }
 

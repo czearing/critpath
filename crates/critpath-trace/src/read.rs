@@ -6,6 +6,7 @@ use critpath_core::{Graph, Micros, Track};
 use fitkit_core::Confidence;
 use serde_json::Value;
 
+use super::correlate::Mark;
 use super::{Binding, FlowPoint, Open};
 
 /// Why a trace could not be read at all.
@@ -115,16 +116,73 @@ fn identity(event: &Value) -> Option<String> {
 /// costs the tool its only claim. Which arguments are meaningful differs per producer, so guessing
 /// is the one thing this reader must not do.
 fn subject(event: &Value) -> Option<String> {
-    let Some(Value::Object(args)) = event.get("args") else {
-        return None;
-    };
-    if args.is_empty() {
+    let fields = arguments(event);
+    if fields.is_empty() {
         return None;
     }
-    let mut fields: Vec<String> =
-        args.iter().map(|(field, value)| format!("{field}={value}")).collect();
-    fields.sort_unstable();
-    Some(fields.join("\u{1}"))
+    let mut written: Vec<String> =
+        fields.into_iter().map(|(field, value)| format!("{field}={value}")).collect();
+    written.sort_unstable();
+    Some(written.join("\u{1}"))
+}
+
+/// Every argument the source recorded, flattened to leaves and pathed by field name.
+///
+/// Flattened because producers nest, and a nested blob is opaque to a reader and to a person: the
+/// url that would let a finding name a file is buried inside an object. Flattening is not
+/// interpretation -- no field is named here, and nothing is selected -- it only stops the
+/// structure hiding the evidence. Arrays are left whole, since their position is meaningful and
+/// splitting them would invent field names the source never wrote.
+fn arguments(event: &Value) -> Vec<(String, String)> {
+    let mut flat = Vec::new();
+    if let Some(Value::Object(args)) = event.get("args") {
+        for (field, value) in args {
+            flatten(field.clone(), value, &mut flat);
+        }
+    }
+    flat
+}
+
+/// Walk one value down to its leaves, pathing each by the fields it sits under.
+fn flatten(path: String, value: &Value, into: &mut Vec<(String, String)>) {
+    match value {
+        Value::Object(fields) => {
+            for (field, nested) in fields {
+                flatten(format!("{path}.{field}"), nested, into);
+            }
+        }
+        other => into.push((path, other.to_string())),
+    }
+}
+
+/// The scope a mark is visible within, as the format states it.
+///
+/// The format defines this field precisely, with three values: one thread, one process, or the
+/// whole trace. Correlating marks without honouring it lets identifiers that are only unique
+/// within a process collide across processes, which fuses unrelated things into one enormous
+/// interval spanning the recording. The scope is the format's own answer to that, so it is used
+/// rather than inferred, and an unstated scope means the default the format names.
+fn scope(event: &Value) -> String {
+    match event.get("s").and_then(Value::as_str) {
+        Some("g") => "g".to_owned(),
+        Some("p") => format!("p{}", number(event, "pid").unwrap_or_default()),
+        _ => format!(
+            "t{}/{}",
+            number(event, "pid").unwrap_or_default(),
+            number(event, "tid").unwrap_or_default()
+        ),
+    }
+}
+
+/// Read one instant: a moment, with everything the source recorded about it.
+pub fn mark(event: &Value) -> Option<Mark> {
+    Some(Mark {
+        scope: scope(event),
+        track: track(event)?,
+        at: number(event, "ts")?,
+        category: text(event, "cat"),
+        fields: arguments(event),
+    })
 }
 
 /// Read one async interval event, opening or closing a pair correlated by identity.

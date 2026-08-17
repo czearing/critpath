@@ -343,3 +343,156 @@ fn every_step_of_the_chain_itself_has_no_room_at_all() {
     let last = analysis.path.steps.last().unwrap().activity;
     assert_eq!(analysis.path.slack_of(last).unwrap().total, 0, "the finish has no room");
 }
+
+// --- Intervals recovered from separate moments -------------------------------------------------
+
+#[test]
+fn a_transfer_recorded_as_two_marks_becomes_one_measured_interval() {
+    // The defect a reader that skips instants can never see. The producer states the life of a
+    // transfer as a send and a finish, so the duration exists only as the gap between them, and
+    // the report can otherwise say the program waited without ever saying what for.
+    let analysis = analyse(&fixture("transfer-by-marks.json")).unwrap();
+    let recovered: Vec<_> =
+        analysis.graph.activities.iter().filter(|a| a.inferred && a.duration() == 78_000).collect();
+    assert_eq!(recovered.len(), 1, "one transfer, bounded by its own two marks");
+    let subject = recovered[0].subject.as_deref().unwrap_or_default();
+    assert!(
+        subject.contains("https://example.test/app.js"),
+        "the finding must name the file a person would open, not the identifier: {subject}",
+    );
+    assert!(subject.contains("requestMethod"), "described by both moments, not just the first");
+}
+
+#[test]
+fn the_same_identifier_in_another_process_is_not_the_same_thing() {
+    // The decoy that fuses unrelated work into one enormous interval. Request ids are unique only
+    // within the process that issued them, and the format states the scope of a mark precisely, so
+    // ignoring it would merge these two into a single span covering the whole recording.
+    let analysis = analyse(&fixture("transfer-by-marks.json")).unwrap();
+    let spans: Vec<i64> = analysis
+        .graph
+        .activities
+        .iter()
+        .filter(|a| a.inferred && a.name == "data.requestId")
+        .map(critpath_core::Activity::duration)
+        .collect();
+    assert!(spans.contains(&78_000), "the renderer's transfer keeps its own extent");
+    assert!(spans.contains(&45_000), "the other process's transfer keeps its own extent too");
+    assert!(
+        !spans.contains(&183_000),
+        "two processes sharing an identifier must never be fused: {spans:?}",
+    );
+}
+
+#[test]
+fn a_correlation_that_spans_the_recording_prices_itself_out() {
+    // The decoy that would otherwise win everything. A frame identifier is present at the start
+    // and at the end, so pairing it yields an interval as long as the trace -- which is the
+    // signature of something that was simply always true rather than something that happened.
+    let analysis = analyse(&fixture("transfer-by-marks.json")).unwrap();
+    let frame = analysis
+        .graph
+        .activities
+        .iter()
+        .find(|a| a.inferred && a.name == "data.frame")
+        .expect("the candidate is admitted rather than filtered by name");
+    let transfer =
+        analysis.graph.activities.iter().find(|a| a.inferred && a.duration() == 78_000).unwrap();
+    assert!(
+        frame.confidence < transfer.confidence,
+        "claiming more of the recording must cost trust, not win on length",
+    );
+}
+
+#[test]
+fn an_inferred_interval_never_becomes_a_dependency() {
+    // The whole reason these are kept apart. A longest path moves along edges, so an edge asserted
+    // on a correlation this reader invented could serialise work that ran in parallel and outrun
+    // the real chain. Measuring is allowed; stating causality is not.
+    let analysis = analyse(&fixture("transfer-by-marks.json")).unwrap();
+    let inferred: Vec<usize> = analysis
+        .graph
+        .activities
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.inferred)
+        .map(|(id, _)| id)
+        .collect();
+    assert!(!inferred.is_empty(), "the fixture must actually exercise this");
+    for edge in &analysis.graph.edges {
+        assert!(
+            !inferred.contains(&edge.from) && !inferred.contains(&edge.to),
+            "an inferred interval must not appear at either end of any dependency",
+        );
+    }
+    let names: Vec<&str> =
+        analysis.path.activities().map(|id| analysis.graph.activities[id].name.as_str()).collect();
+    assert_eq!(names, ["Boot", "Render"], "the chain is what the source stated, and nothing more");
+}
+
+#[test]
+fn the_wait_is_given_the_subject_that_was_in_flight_across_it() {
+    // What surpasses a profile of what ran: the chain spends its time waiting, and the only
+    // honest thing to say about a wait is what was open while it lasted.
+    let analysis = analyse(&fixture("transfer-by-marks.json")).unwrap();
+    let named: Vec<(&str, i64)> = analysis
+        .proof
+        .findings
+        .iter()
+        .filter_map(|finding| match finding {
+            Proven::WaitedWhileInFlight { during, overlap, .. } => Some((
+                analysis.graph.activities[*during].subject.as_deref().unwrap_or_default(),
+                *overlap,
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(named.len(), 1, "one wait has one best explanation, not a list of everything open");
+    assert!(
+        named[0].0.contains("https://example.test/app.js"),
+        "the transfer explains the wait, not the frame identifier that spans the trace: {named:?}",
+    );
+    assert_eq!(named[0].1, 78_000, "reported as the overlap actually measured");
+}
+
+#[test]
+fn overlap_in_time_is_never_offered_as_a_saving() {
+    // The line this rule must not cross. Nothing in the trace states that the chain waited *for*
+    // the transfer, so the finding carries no cost and can never be chosen as a repair.
+    let analysis = analyse(&fixture("transfer-by-marks.json")).unwrap();
+    for finding in &analysis.proof.findings {
+        if matches!(finding, Proven::WaitedWhileInFlight { .. }) {
+            assert_eq!(finding.cost(), 0, "an unproven cause may not be priced");
+        }
+    }
+}
+
+#[test]
+fn a_handoff_that_lands_in_dead_time_stays_unattached() {
+    // The coincidence this reader must refuse to profit from. A flow arrives at a moment when
+    // nothing was running, and the only thing covering that moment is an interval correlated from
+    // two marks. Binding to it would attach the endpoint and silence a gap in coverage, which is
+    // exactly why it is tempting -- and it would state that the handoff was received by a transfer
+    // this reader inferred, which the source never said. The honest outcome is an endpoint that
+    // stays unattached and a coverage report that admits it.
+    let analysis = analyse(&fixture("flow-into-inferred.json")).unwrap();
+    let inferred: Vec<usize> = analysis
+        .graph
+        .activities
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.inferred)
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(inferred.len(), 1, "the two marks give one correlated interval");
+    for edge in &analysis.graph.edges {
+        assert!(
+            !inferred.contains(&edge.from) && !inferred.contains(&edge.to),
+            "a correlated interval may never be an end of a stated dependency: {edge:?}",
+        );
+    }
+    assert_eq!(
+        analysis.graph.coverage.unbound_flows, 1,
+        "the endpoint that could not be placed is reported, not quietly absorbed",
+    );
+}

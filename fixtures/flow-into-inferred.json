@@ -1,0 +1,21 @@
+{
+  "traceEvents": [
+    { "ph": "M", "name": "thread_name", "pid": 1, "tid": 1, "args": { "name": "issuer" } },
+    { "ph": "M", "name": "thread_name", "pid": 1, "tid": 2, "args": { "name": "worker" } },
+
+    { "ph": "X", "name": "Boot", "cat": "app", "pid": 1, "tid": 1, "ts": 0, "dur": 10000 },
+    { "ph": "s", "name": "handoff", "cat": "flow", "id": "h1", "pid": 1, "tid": 1, "ts": 9000 },
+
+    { "ph": "I", "name": "ResourceSendRequest", "cat": "devtools.timeline", "s": "t", "pid": 1, "tid": 1, "ts": 5000,
+      "args": { "data": { "requestId": "r-9", "url": "https://example.test/late.js" } } },
+    { "ph": "I", "name": "ResourceFinish", "cat": "devtools.timeline", "s": "t", "pid": 1, "tid": 1, "ts": 105000,
+      "args": { "data": { "requestId": "r-9", "encodedDataLength": 10 } } },
+
+    { "ph": "f", "name": "handoff", "cat": "flow", "id": "h1", "pid": 1, "tid": 1, "ts": 50000, "bp": "e" },
+
+    { "ph": "s", "name": "handoff", "cat": "flow", "id": "h2", "pid": 1, "tid": 1, "ts": 9500 },
+    { "ph": "f", "name": "handoff", "cat": "flow", "id": "h2", "pid": 1, "tid": 2, "ts": 100000, "bp": "e" },
+
+    { "ph": "X", "name": "Render", "cat": "gfx", "pid": 1, "tid": 2, "ts": 100000, "dur": 10000 }
+  ]
+}

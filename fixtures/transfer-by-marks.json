@@ -1,0 +1,25 @@
+{
+  "traceEvents": [
+    { "ph": "M", "name": "thread_name", "pid": 1, "tid": 1, "args": { "name": "CrRendererMain" } },
+
+    { "ph": "X", "name": "Boot", "cat": "blink", "pid": 1, "tid": 1, "ts": 0, "dur": 10000 },
+    { "ph": "X", "name": "Render", "cat": "blink", "pid": 1, "tid": 1, "ts": 100000, "dur": 10000 },
+
+    { "ph": "I", "name": "ResourceSendRequest", "cat": "devtools.timeline", "s": "t", "pid": 1, "tid": 1, "ts": 12000,
+      "args": { "data": { "requestId": "r-1", "url": "https://example.test/app.js", "requestMethod": "GET" } } },
+    { "ph": "I", "name": "ResourceFinish", "cat": "devtools.timeline", "s": "t", "pid": 1, "tid": 1, "ts": 90000,
+      "args": { "data": { "requestId": "r-1", "encodedDataLength": 1234, "didFail": false } } },
+
+    { "ph": "I", "name": "FrameCommittedInBrowser", "cat": "devtools.timeline", "s": "t", "pid": 1, "tid": 1, "ts": 1000,
+      "args": { "data": { "frame": "F1" } } },
+    { "ph": "I", "name": "FrameCommittedInBrowser", "cat": "devtools.timeline", "s": "t", "pid": 1, "tid": 1, "ts": 190000,
+      "args": { "data": { "frame": "F1" } } },
+
+    { "ph": "I", "name": "ResourceSendRequest", "cat": "devtools.timeline", "s": "t", "pid": 2, "tid": 1, "ts": 150000,
+      "args": { "data": { "requestId": "r-1", "url": "https://elsewhere.test/other.js" } } },
+    { "ph": "I", "name": "ResourceFinish", "cat": "devtools.timeline", "s": "t", "pid": 2, "tid": 1, "ts": 195000,
+      "args": { "data": { "requestId": "r-1", "encodedDataLength": 99 } } },
+
+    { "ph": "I", "name": "navigationStart", "cat": "blink.user_timing", "s": "t", "pid": 1, "tid": 1, "ts": 500 }
+  ]
+}

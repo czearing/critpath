@@ -30,8 +30,8 @@ pub fn links(graph: &Graph) -> Vec<(ActivityId, ActivityId)> {
 /// Whether a stated pair is one a chain could ever be built from, ignoring direction in time.
 fn usable(graph: &Graph, from: ActivityId, to: ActivityId) -> bool {
     from != to
-        && graph.activities.get(from).is_some_and(critpath_core::Activity::is_informative)
-        && graph.activities.get(to).is_some_and(critpath_core::Activity::is_informative)
+        && graph.activities.get(from).is_some_and(critpath_core::Activity::decides)
+        && graph.activities.get(to).is_some_and(critpath_core::Activity::decides)
         && !nested(graph, from, to)
 }
 
@@ -99,6 +99,7 @@ mod tests {
                     confidence: Confidence::FULL,
                     concurrent: false,
                     subject: None,
+                    inferred: false,
                 })
                 .collect(),
             edges: edges

@@ -68,7 +68,7 @@ pub fn reckon(graph: &Graph, order: &[ActivityId]) -> Option<Reckoning> {
     let mut came_from: Vec<Option<ActivityId>> = vec![None; count];
     for &id in order {
         let activity = &graph.activities[id];
-        if !activity.is_informative() {
+        if !activity.decides() {
             continue;
         }
         let mut best = (activity.duration(), None);
@@ -91,7 +91,7 @@ pub fn reckon(graph: &Graph, order: &[ActivityId]) -> Option<Reckoning> {
     // activity that in fact started late did not have the room its earliest possible start would
     // have given it, and claiming otherwise would report slack nobody can spend.
     let finish = (0..count)
-        .filter(|&id| graph.activities[id].is_informative())
+        .filter(|&id| graph.activities[id].decides())
         .map(|id| graph.activities[id].end)
         .max()?;
     let mut latest = vec![finish; count];
@@ -127,7 +127,7 @@ pub fn reckon(graph: &Graph, order: &[ActivityId]) -> Option<Reckoning> {
     // chain. Accumulated cost breaks a tie, because between two activities ending together the one
     // that accumulated more dependent work is the one that explains the elapsed time.
     let mut end = (0..count)
-        .filter(|&id| graph.activities[id].is_informative())
+        .filter(|&id| graph.activities[id].decides())
         .max_by_key(|&id| (graph.activities[id].end, head[id]))?;
 
     let mut chain = vec![end];

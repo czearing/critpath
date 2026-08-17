@@ -109,7 +109,7 @@ impl<'a> Law for RepeatedWork<'a> {
             .into_iter()
             .filter(|(_, occurrences)| occurrences.len() > 1)
             .map(|(key, occurrences)| Finding::RepeatedWork {
-                key: (key.0.to_owned(), key.1.to_owned()),
+                key: (key.0.to_owned(), key.1.to_owned(), key.2.to_owned()),
                 // Everything after the first occurrence is time the chain spent recomputing what
                 // it already had, so the first is the work and the rest are the cost.
                 cost: occurrences[1..].iter().map(|&id| self_time[id]).sum::<Micros>(),
@@ -154,8 +154,11 @@ impl<'a> Law for DeadWait<'a> {
             // Contention is a different problem with a different fix, so the rule only fires when
             // nothing at all was running: an idle machine is always a dependency issued too late.
             // Censored and concurrent work counts, because a network request in flight explains a
-            // gap that a late dependency would not.
-            let busy = graph.activities.iter().any(|a| a.overlaps(opened, starts));
+            // gap that a late dependency would not. Inferred work does not: its extent was
+            // correlated by this reader rather than observed, and more importantly a transfer in
+            // flight is not the machine doing anything. Letting it count would let an inference
+            // silence the one rule that catches an idle machine.
+            let busy = graph.activities.iter().any(|a| !a.inferred && a.overlaps(opened, starts));
             if !busy {
                 findings.push(Finding::DeadWait {
                     before: step.activity,
@@ -199,7 +202,12 @@ impl<'a> Law for OffPath<'a> {
         let Some((longest, &duration)) = self_time
             .iter()
             .enumerate()
-            .filter(|&(id, _)| observation.graph.activities[id].is_informative())
+            .filter(|&(id, _)| {
+                // Only an interval the source measured may be called the largest thing here. An
+                // inferred extent is a gap between two marks, and letting one compete for the
+                // title would put a correlation this reader invented at the top of the report.
+                observation.graph.activities[id].decides()
+            })
             .max_by_key(|&(_, cost)| cost)
         else {
             return Ok(Vec::new());
@@ -214,5 +222,89 @@ impl<'a> Law for OffPath<'a> {
         // grow first, which is a bound rather than a dismissal.
         let room = observation.path.slack_of(longest).map_or(0, |slack| slack.total);
         Ok(vec![Finding::OffPath { activity: longest, duration, room }])
+    }
+}
+
+/// What was in flight while the chain waited.
+///
+/// The rule that answers "waiting for what". A chain made mostly of waiting defeats every rule
+/// about work, because there is no work to convict: the machine was busy elsewhere, so the idle
+/// rule stays silent, and nothing was repeated, so the repetition rule stays silent. The report
+/// then states a large number and names nothing, which is the failure mode of every trace tool
+/// that only reads what ran.
+///
+/// Threshold free, and deliberately modest. It measures how much of the chain's waiting each piece
+/// of concurrent work overlapped, which is arithmetic on intervals. It does not say the chain was
+/// waiting for that work, because a dependency between them was never stated -- and where the
+/// trace does state one, the wait already has a subject and this rule is not needed.
+///
+/// Only concurrent work is weighed. Work that holds a track is ordered by that track, so its
+/// relationship to the chain is already decided by the graph; work correlated by identity is the
+/// only kind that can be in flight independently of what any thread is doing.
+#[derive(Debug, Default)]
+pub struct WaitedWhileInFlight<'a>(PhantomData<&'a ()>);
+
+impl<'a> Law for WaitedWhileInFlight<'a> {
+    type Input = Observation<'a>;
+    type Output = Vec<Finding>;
+
+    fn citation(&self) -> Citation {
+        CRITICAL_PATH
+    }
+
+    fn admits(&self, observation: &Self::Input) -> Answer<()> {
+        // The claim is arithmetic on two intervals that were both read. A dependency missing
+        // elsewhere cannot make an overlap stop having happened, so an incomplete edge set is
+        // survivable; an event nobody could read is not, since it might be the work in flight.
+        has_a_chain(observation)?;
+        if observation.graph.coverage.unread == 0 {
+            Ok(())
+        } else {
+            Err(Refusal::unreported("events in the trace could not be read at all"))
+        }
+    }
+
+    fn derive(&self, observation: &Self::Input) -> Answer<Self::Output> {
+        let graph = observation.graph;
+        let in_flight: Vec<usize> = (0..graph.activities.len())
+            .filter(|&id| graph.activities[id].concurrent && graph.activities[id].is_informative())
+            .collect();
+        let mut covered: Vec<(usize, Micros, usize)> = Vec::new();
+        for step in &observation.path.steps {
+            if step.wait_before == 0 {
+                continue;
+            }
+            let starts = graph.activities[step.activity].start;
+            let opened = starts - step.wait_before;
+            // One wait has one best explanation, not a list of everything that happened to be
+            // open. Weighed by trust rather than by length alone, because the widest candidate is
+            // usually the least meaningful one: a correlation that spans the whole recording
+            // overlaps every wait completely and would otherwise win all of them. Scaling the
+            // overlap by the confidence the interval earned lets a short, well identified transfer
+            // outrank a long, badly identified one without this rule holding a cutoff.
+            let best = in_flight
+                .iter()
+                .filter_map(|&id| {
+                    let activity = &graph.activities[id];
+                    let overlap = activity.end.min(starts) - activity.start.max(opened);
+                    (overlap > 0).then(|| (id, overlap, activity.confidence.apply(overlap as f64)))
+                })
+                .max_by(|a, b| a.2.total_cmp(&b.2).then_with(|| b.0.cmp(&a.0)));
+            let Some((id, overlap, _)) = best else {
+                continue;
+            };
+            match covered.iter_mut().find(|(seen, _, _)| *seen == id) {
+                Some(entry) => {
+                    entry.1 += overlap;
+                    entry.2 += 1;
+                }
+                None => covered.push((id, overlap, 1)),
+            }
+        }
+        covered.sort_by_key(|&(id, overlap, _)| (core::cmp::Reverse(overlap), id));
+        Ok(covered
+            .into_iter()
+            .map(|(during, overlap, waits)| Finding::WaitedWhileInFlight { during, overlap, waits })
+            .collect())
     }
 }

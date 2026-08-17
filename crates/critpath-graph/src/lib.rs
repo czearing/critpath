@@ -90,7 +90,7 @@ impl CriticalPath {
 /// one carries the weight. Without a flow event, work on separate threads has no recorded order,
 /// and ranking those activities by duration would invent a causality the trace never stated.
 pub fn critical_path(graph: &Graph) -> Answer<CriticalPath> {
-    if !graph.activities.iter().any(Activity::is_informative) {
+    if !graph.activities.iter().any(Activity::decides) {
         return Err(Refusal::uninformative("no activity in the trace has a usable interval"));
     }
     if graph.tracks().len() > 1 && graph.stated_edges() == 0 {
@@ -155,6 +155,7 @@ mod tests {
             confidence: Confidence::FULL,
             concurrent: false,
             subject: None,
+            inferred: false,
         }
     }
 
