@@ -52,17 +52,17 @@ dependencies = [
 [[package]]
 name = "fitkit-core"
 version = "0.1.0"
-source = "git+https://github.com/czearing/fitkit#e8031321a3b3c5db5d783a23fd9fac504a4b4ed8"
+source = "git+https://github.com/czearing/fitkit#2e7d75ce985eaa93bbee94e84048f3bdee8d81df"
 
 [[package]]
 name = "fitkit-dp"
 version = "0.1.0"
-source = "git+https://github.com/czearing/fitkit#e8031321a3b3c5db5d783a23fd9fac504a4b4ed8"
+source = "git+https://github.com/czearing/fitkit#2e7d75ce985eaa93bbee94e84048f3bdee8d81df"
 
 [[package]]
 name = "fitkit-ledger"
 version = "0.1.0"
-source = "git+https://github.com/czearing/fitkit#e8031321a3b3c5db5d783a23fd9fac504a4b4ed8"
+source = "git+https://github.com/czearing/fitkit#2e7d75ce985eaa93bbee94e84048f3bdee8d81df"
 dependencies = [
  "fitkit-core",
 ]

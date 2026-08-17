@@ -4,7 +4,7 @@
 //! reports the decoy is wrong in the way that matters most here, because a tool that cries wolf on
 //! work nobody needs to fix is worse than no tool at all.
 
-use critpath::{analyse, Proven};
+use critpath::{analyse, EdgeKind, Proven};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/").to_owned() + name;
@@ -72,7 +72,7 @@ fn the_largest_activity_is_reported_as_not_mattering() {
         .findings
         .iter()
         .filter_map(|finding| match finding {
-            Proven::OffPath { activity, duration } => {
+            Proven::OffPath { activity, duration, .. } => {
                 Some((analysis.graph.activities[*activity].name.as_str(), *duration))
             }
             _ => None,
@@ -222,4 +222,124 @@ fn asynchronous_work_is_read_and_never_ordered_by_where_it_sits() {
 fn something_that_is_not_a_trace_is_refused_rather_than_analysed() {
     assert!(analyse(b"{\"hello\":1}").is_err());
     assert!(analyse(b"not json at all").is_err());
+}
+
+#[test]
+fn an_arrival_binds_to_the_work_it_hands_to_and_a_stated_binding_point_overrides_it() {
+    // The defect a real trace exposed, and the reason 531 of 6448 stated dependencies looked
+    // unattachable. A flow ARRIVES at the moment work becomes runnable, so by construction nothing
+    // is usually running yet, and asking which activity contains that instant finds nothing at all.
+    // The format says an arrival binds to the next work to begin, and only says otherwise when the
+    // event carries the binding point that asks for the enclosing work.
+    let analysis = analyse(&fixture("handoff.json")).unwrap();
+    assert!(
+        analysis.coverage.is_total(),
+        "no stated dependency went unattached: {:?}",
+        analysis.coverage
+    );
+
+    let named = |id: usize| analysis.graph.activities[id].name.as_str();
+    let stated: Vec<(&str, &str)> = analysis
+        .graph
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == EdgeKind::Flow)
+        .map(|edge| (named(edge.from), named(edge.to)))
+        .collect();
+
+    assert!(stated.contains(&("Fetch", "Render")), "an arrival hands to the next work: {stated:?}");
+    // The decoy. This arrival lands inside work that IS running, and carries the binding point
+    // that says to attach there. Binding it to the next work instead would be the same mistake in
+    // the other direction, and nothing but the stated field separates the two cases.
+    assert!(
+        stated.contains(&("Fetch", "Busy")),
+        "a stated binding point attaches to the enclosing work: {stated:?}"
+    );
+    assert!(!stated.contains(&("Fetch", "Next")), "and must not skip past it: {stated:?}");
+}
+
+#[test]
+fn a_wait_names_what_it_waited_for_only_when_the_source_said_so() {
+    // Two dead waits on one chain, alike in every way except whether the trace states a dependency
+    // across them. The first is a track that simply went idle: nothing says what for, so nothing is
+    // claimed. The second is a stated handoff, so it has a subject.
+    let analysis = analyse(&fixture("waits.json")).unwrap();
+    let waits: Vec<(i64, Option<&str>)> = analysis
+        .findings()
+        .iter()
+        .filter_map(|finding| match finding {
+            Proven::DeadWait { waited_on, stated, cost, .. } => Some((
+                *cost,
+                stated
+                    .then(|| waited_on.map(|id| analysis.graph.activities[id].name.as_str()))
+                    .flatten(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        waits,
+        [(25_000, Some("Resume")), (20_000, None)],
+        "the stated handoff is attributed and the idle track is not",
+    );
+}
+
+#[test]
+fn work_off_the_chain_is_reported_with_the_room_it_has_left() {
+    // A ranked profile says the largest activity is the problem; saying only that it is off the
+    // chain invites ignoring it forever. The backward pass says how much it may grow first.
+    let analysis = analyse(&fixture("web-route.json")).unwrap();
+    let rooms: Vec<(&str, i64)> = analysis
+        .findings()
+        .iter()
+        .filter_map(|finding| match finding {
+            Proven::OffPath { activity, room, .. } => {
+                Some((analysis.graph.activities[*activity].name.as_str(), *room))
+            }
+            _ => None,
+        })
+        .collect();
+    // It ends at 90ms against a chain that ends at 155ms, so 65ms more and it decides the finish.
+    assert_eq!(rooms, [("TranscodeImage", 65_000)]);
+}
+
+#[test]
+fn the_margin_is_set_by_the_tightest_rival_and_not_the_roomiest() {
+    // The decoy for the backward pass. Two collections off the chain have far more room than the
+    // transcode does; a margin taken from the wrong one would license optimising past the point
+    // where the answer changes.
+    let analysis = analyse(&fixture("web-route.json")).unwrap();
+    let room = |name: &str| {
+        analysis
+            .graph
+            .activities
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.name == name)
+            .filter_map(|(id, _)| analysis.path.slack_of(id))
+            .map(|slack| slack.total)
+            .max()
+            .unwrap()
+    };
+    assert_eq!(room("TranscodeImage"), 65_000);
+    assert!(room("MinorGC") > room("TranscodeImage"), "the decoy has more room");
+    assert!(analysis.path.margin.survives(64_999.0));
+    assert!(!analysis.path.margin.survives(65_000.0), "the tightest rival binds");
+}
+
+#[test]
+fn every_step_of_the_chain_itself_has_no_room_at_all() {
+    // What the backward pass must agree with the forward pass about. An activity the chain runs
+    // through cannot be delayed without the finish moving, except across a wait, where the room
+    // is the wait itself rather than the work.
+    let analysis = analyse(&fixture("handoff.json")).unwrap();
+    for step in &analysis.path.steps {
+        let slack = analysis.path.slack_of(step.activity).expect("a chain step decides something");
+        assert!(
+            slack.total <= step.wait_before.max(analysis.path.wait),
+            "no step of the chain has room beyond the waiting on it",
+        );
+    }
+    let last = analysis.path.steps.last().unwrap().activity;
+    assert_eq!(analysis.path.slack_of(last).unwrap().total, 0, "the finish has no room");
 }

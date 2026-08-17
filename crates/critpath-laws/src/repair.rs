@@ -1,7 +1,7 @@
 //! Which repairs to make, and where making more of them stops paying.
 
 use critpath_core::Micros;
-use fitkit_core::{Answer, Margin, Refusal};
+use fitkit_core::{Answer, Margin, Refusal, Scale};
 use fitkit_dp::{optimise_subset, SubsetResult, MAX_POOL};
 
 use crate::Finding;
@@ -52,9 +52,12 @@ pub fn choose(findings: &[Finding], budget: usize, margin: Margin) -> Answer<Rep
     }
     let ceiling = margin.get();
     let pool = findings.len();
-    // Ties are broken toward fewer changes: recovery is integer microseconds, so scaling it past
-    // the pool size makes one microsecond outrank every possible saving in change count.
-    let scale = (pool + 1) as f64;
+    // Two quantities of different kinds: time recovered, which decides, and the number of changes,
+    // which only breaks ties. Keeping them apart needs a weight wide enough that no possible run
+    // of tie-breaking can reach one microsecond of recovery, and that weight is derived from the
+    // subject rather than chosen: at most `pool` changes, each worth one. Picking it by eye is the
+    // failure this guards against, because it has to be re-derived every time the pool can grow.
+    let scale = Scale::over(pool, 1.0).breach();
     let result: SubsetResult = optimise_subset(pool, AFFORDABLE, BEAM, |members| {
         let count = members.count_ones() as usize;
         if count > budget {
@@ -85,7 +88,7 @@ mod tests {
     use super::{choose, Finding};
 
     fn wait(cost: i64) -> Finding {
-        Finding::DeadWait { before: 0, cost }
+        Finding::DeadWait { before: 0, waited_on: None, stated: false, cost }
     }
 
     #[test]
@@ -115,7 +118,7 @@ mod tests {
 
     #[test]
     fn findings_that_cost_nothing_are_refused_rather_than_ranked() {
-        let findings = vec![Finding::OffPath { activity: 0, duration: 500 }];
+        let findings = vec![Finding::OffPath { activity: 0, duration: 500, room: 0 }];
         assert_eq!(
             choose(&findings, 1, Margin::UNBOUNDED).unwrap_err().kind(),
             RefusalKind::Uninformative

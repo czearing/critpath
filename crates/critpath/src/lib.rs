@@ -18,6 +18,7 @@ use fitkit_core::{Answer, Refusal};
 
 mod render;
 
+pub use critpath_core::EdgeKind;
 pub use critpath_laws::{Finding as Proven, Silence};
 pub use critpath_trace::ParseError;
 pub use render::report;

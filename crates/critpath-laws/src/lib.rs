@@ -53,6 +53,17 @@ pub enum Finding {
     DeadWait {
         /// The activity that was waiting to start.
         before: ActivityId,
+        /// The work it was waiting for, when the chain came from somewhere.
+        ///
+        /// A wait of several seconds with nothing named is a number, not a finding. What ends a
+        /// wait is the work the chain arrived from, which the graph already holds.
+        waited_on: Option<ActivityId>,
+        /// Whether the source stated that dependency rather than it following from track order.
+        ///
+        /// False makes this a scheduling wait: the track was idle and nothing in the trace says
+        /// what for, so the wait is reported as unattributed instead of being given a subject it
+        /// has not earned.
+        stated: bool,
         /// How long nothing ran.
         cost: Micros,
     },
@@ -65,6 +76,12 @@ pub enum Finding {
         activity: ActivityId,
         /// How long it ran for.
         duration: Micros,
+        /// At most how much longer it could run before it becomes the constraint.
+        ///
+        /// The difference between "this does not matter" and "this does not matter yet". An upper
+        /// bound, because the recorded dependencies are a subset of the real ones and adding one
+        /// can only take room away.
+        room: Micros,
     },
 }
 

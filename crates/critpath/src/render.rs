@@ -113,17 +113,29 @@ fn sentence(analysis: &Analysis, finding: &Finding) -> String {
             occurrences.len(),
             micros(*cost),
         ),
-        Finding::DeadWait { before, cost } => format!(
-            "Nothing ran anywhere for {} before {}. That is a dependency issued later than it \
-             had to be, not slow code.",
-            micros(*cost),
-            analysis.graph.activities[*before].name,
-        ),
-        Finding::OffPath { activity, duration } => format!(
-            "The largest activity, {} at {}, is not on the chain. Deleting it entirely would not \
-             move the finish.",
+        Finding::DeadWait { before, waited_on, stated, cost } => {
+            let waited_for = match (waited_on, stated) {
+                (Some(source), true) => {
+                    format!("waiting for {}", analysis.graph.activities[*source].name)
+                }
+                // Nothing in the trace says what the gap was for. Naming the previous step anyway
+                // would dress track order up as a stated dependency, so it is left unattributed.
+                _ => "unattributed, since no dependency into it was stated".to_owned(),
+            };
+            format!(
+                "Nothing ran anywhere for {} before {} — {}. That is a dependency issued later \
+                 than it had to be, not slow code.",
+                micros(*cost),
+                analysis.graph.activities[*before].name,
+                waited_for,
+            )
+        }
+        Finding::OffPath { activity, duration, room } => format!(
+            "The largest activity, {} at {}, is not on the chain: deleting it entirely would not \
+             move the finish, and it has at most {} of room before it becomes the constraint.",
             analysis.graph.activities[*activity].name,
             micros(*duration),
+            micros(*room),
         ),
     }
 }

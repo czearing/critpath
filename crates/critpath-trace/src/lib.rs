@@ -24,11 +24,27 @@ const IGNORED: [&str; 7] = ["M", "i", "I", "c", "C", "n", "R"];
 /// Phases that state a dependency.
 const FLOW: [&str; 3] = ["s", "t", "f"];
 
-/// One flow endpoint, before it is bound to the activity enclosing it.
+/// Which activity a flow endpoint attaches to.
+///
+/// The two ends of a flow do not attach by the same rule, and reading them alike is what makes a
+/// trace look like it is missing dependencies it actually stated. A flow *leaves* from work that is
+/// running, so its start attaches to the interval containing the instant. A flow *arrives* at work
+/// that has not begun yet -- an arrival is the moment something becomes runnable, so by
+/// construction nothing is usually running -- and it attaches to the next interval to begin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Binding {
+    /// The interval containing the instant.
+    Enclosing,
+    /// The next interval to begin at or after the instant.
+    Next,
+}
+
+/// One flow endpoint, before it is bound to an activity.
 struct FlowPoint {
     id: String,
     track: Track,
     at: Micros,
+    binds: Binding,
 }
 
 /// Work opened and not yet closed.
@@ -66,7 +82,7 @@ pub fn read(bytes: &[u8]) -> Result<Graph, ParseError> {
             continue;
         }
         if FLOW.contains(&phase) {
-            match read::flow(event) {
+            match read::flow(event, phase) {
                 Some(point) => flows.push(point),
                 None => graph.coverage.unread += 1,
             }

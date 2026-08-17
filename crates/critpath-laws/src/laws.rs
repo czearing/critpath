@@ -157,7 +157,12 @@ impl<'a> Law for DeadWait<'a> {
             // gap that a late dependency would not.
             let busy = graph.activities.iter().any(|a| a.overlaps(opened, starts));
             if !busy {
-                findings.push(Finding::DeadWait { before: step.activity, cost: step.wait_before });
+                findings.push(Finding::DeadWait {
+                    before: step.activity,
+                    waited_on: step.waited_on,
+                    stated: step.stated,
+                    cost: step.wait_before,
+                });
             }
         }
         Ok(findings)
@@ -204,6 +209,10 @@ impl<'a> Law for OffPath<'a> {
         if duration == 0 || on_chain.contains(&longest) {
             return Ok(Vec::new());
         }
-        Ok(vec![Finding::OffPath { activity: longest, duration }])
+        // How much room it has is the other half of the claim. Saying only that it is off the
+        // chain invites the reader to ignore it forever; the backward pass says how much it may
+        // grow first, which is a bound rather than a dismissal.
+        let room = observation.path.slack_of(longest).map_or(0, |slack| slack.total);
+        Ok(vec![Finding::OffPath { activity: longest, duration, room }])
     }
 }

@@ -2,7 +2,7 @@
 
 use critpath_core::{Activity, ActivityId, Edge, EdgeKind, Graph, Track};
 
-use super::FlowPoint;
+use super::{Binding, FlowPoint};
 
 /// Activities on one track that could contain a moment, with the furthest end any earlier activity
 /// reaches. The second half is what lets the search stop early.
@@ -49,6 +49,16 @@ impl<'a> Reach<'a> {
             }
         }
         None
+    }
+
+    /// The first activity to begin at or after `at`.
+    ///
+    /// Where an arrival attaches. A flow end marks the moment work became runnable, so the thing
+    /// it hands to is the next thing that starts, not whatever happened to be running -- which is
+    /// usually nothing, since the point of the handoff is that the machine was free to take it.
+    fn next_after(&self, at: i64) -> Option<ActivityId> {
+        let start = self.ids.partition_point(|&id| self.activities[id].start < at);
+        self.ids[start..].iter().copied().find(|&id| !self.activities[id].confidence.is_zero())
     }
 }
 
@@ -97,10 +107,13 @@ pub fn flows(graph: &Graph, points: &[FlowPoint]) -> (Vec<Edge>, usize) {
     let mut bound: Vec<(&str, i64, ActivityId)> = Vec::new();
     let mut unbound = 0;
     for point in points {
-        let found = reach
-            .iter()
-            .find(|(track, _)| *track == point.track)
-            .and_then(|(_, reach)| reach.enclosing(point.at));
+        let found =
+            reach.iter().find(|(track, _)| *track == point.track).and_then(
+                |(_, reach)| match point.binds {
+                    Binding::Enclosing => reach.enclosing(point.at),
+                    Binding::Next => reach.next_after(point.at),
+                },
+            );
         match found {
             Some(id) => bound.push((point.id.as_str(), point.at, id)),
             // A flow endpoint outside every activity states a dependency whose owner was never

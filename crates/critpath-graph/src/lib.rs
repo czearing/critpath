@@ -4,12 +4,13 @@
 //! off that chain can be deleted outright without the whole finishing any sooner, which is the one
 //! thing a ranked profile cannot express and the reason this crate exists.
 
-use critpath_core::{Activity, ActivityId, Graph, Micros};
+use critpath_core::{Activity, ActivityId, EdgeKind, Graph, Micros};
 use fitkit_core::{Answer, Margin, Refusal};
 
 mod chain;
 mod order;
 
+pub use chain::{Reckoning, Slack};
 pub use order::{contradictions, topological};
 
 /// One activity on the path, and the dead time immediately before it.
@@ -20,6 +21,18 @@ pub struct Step {
     /// Time between the previous step ending and this one starting. Nothing on the chain ran for
     /// it, so it is waiting rather than working.
     pub wait_before: Micros,
+    /// The work this step was waiting for, when there was a previous step.
+    ///
+    /// A wait with no subject is not a finding, it is a number. What ends a wait is the thing the
+    /// chain came from, and the graph already holds it, so naming it costs no new evidence.
+    pub waited_on: Option<ActivityId>,
+    /// Whether the source stated that dependency, rather than it following from track order.
+    ///
+    /// The difference between two kinds of wait, and the rule needs no threshold to tell them
+    /// apart. A stated dependency names what was awaited, so the wait can be attributed. Bare
+    /// track order says only that the track was idle, and nothing in the trace says why, so the
+    /// honest report is that the wait is unattributed.
+    pub stated: bool,
 }
 
 /// The longest chain of dependent work, with its cost split into work and waiting.
@@ -36,6 +49,14 @@ pub struct CriticalPath {
     /// The point at which optimising this path stops paying. No margin means something else
     /// already finishes just as late, so the next microsecond saved here buys nothing.
     pub margin: Margin,
+    /// Room behind every activity in the graph, indexed by [`ActivityId`].
+    ///
+    /// The half a forward pass cannot supply. An activity off the chain is not simply irrelevant;
+    /// it has a stated amount of room before it becomes the constraint, and that turns "ignore
+    /// this" into "ignore this until it grows by this much".
+    pub slack: Vec<Option<Slack>>,
+    /// When the last thing to finish finished, which is what the room is measured against.
+    pub finish: Micros,
 }
 
 impl CriticalPath {
@@ -52,6 +73,11 @@ impl CriticalPath {
     /// The activities on the chain, in order.
     pub fn activities(&self) -> impl Iterator<Item = ActivityId> + '_ {
         self.steps.iter().map(|step| step.activity)
+    }
+
+    /// Room behind one activity, if its interval could decide anything.
+    pub fn slack_of(&self, activity: ActivityId) -> Option<Slack> {
+        self.slack.get(activity).copied().flatten()
     }
 }
 
@@ -74,25 +100,42 @@ pub fn critical_path(graph: &Graph) -> Answer<CriticalPath> {
     }
     let order = topological(graph)
         .ok_or_else(|| Refusal::incoherent("dependencies form a cycle, so no chain is longest"))?;
-    let walked = chain::longest(graph, &order)
+    let reckoning = chain::reckon(graph, &order)
         .ok_or_else(|| Refusal::uninformative("no activity carries a positive interval"))?;
+    let walked = &reckoning.chain;
+
+    // Which pairs the source stated itself, so a wait can say whether it has a subject at all.
+    // Sorted once and searched, rather than scanned per step, since a real trace states edges in
+    // the thousands and the chain is walked in full.
+    let mut stated: Vec<(ActivityId, ActivityId)> = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == EdgeKind::Flow)
+        .map(|edge| (edge.from, edge.to))
+        .collect();
+    stated.sort_unstable();
 
     let mut steps = Vec::with_capacity(walked.len());
     let mut work = 0;
     let mut wait = 0;
-    let mut previous_end: Option<Micros> = None;
-    for id in &walked {
+    let mut previous: Option<(ActivityId, Micros)> = None;
+    for id in walked {
         let activity = &graph.activities[*id];
-        let gap = previous_end.map_or(0, |end| (activity.start - end).max(0));
+        let gap = previous.map_or(0, |(_, end)| (activity.start - end).max(0));
         work += activity.duration();
         wait += gap;
-        steps.push(Step { activity: *id, wait_before: gap });
-        previous_end = Some(activity.end);
+        steps.push(Step {
+            activity: *id,
+            wait_before: gap,
+            waited_on: previous.map(|(from, _)| from),
+            stated: previous.is_some_and(|(from, _)| stated.binary_search(&(from, *id)).is_ok()),
+        });
+        previous = Some((*id, activity.end));
     }
 
-    let margin = chain::competitor(graph, &walked)
+    let margin = chain::competitor(&reckoning, walked)
         .map_or(Margin::UNBOUNDED, |slack| Margin::new(slack as f64));
-    Ok(CriticalPath { steps, work, wait, margin })
+    Ok(CriticalPath { steps, work, wait, margin, slack: reckoning.slack, finish: reckoning.finish })
 }
 
 #[cfg(test)]

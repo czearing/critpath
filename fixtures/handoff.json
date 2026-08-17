@@ -1,0 +1,16 @@
+{
+  "traceEvents": [
+    { "ph": "M", "name": "thread_name", "pid": 1, "tid": 1, "args": { "name": "issuer" } },
+
+    { "ph": "X", "name": "Fetch", "cat": "net", "pid": 1, "tid": 1, "ts": 0, "dur": 10000 },
+    { "ph": "s", "name": "handoff", "cat": "flow", "id": "h1", "pid": 1, "tid": 1, "ts": 9000 },
+    { "ph": "s", "name": "handoff", "cat": "flow", "id": "h2", "pid": 1, "tid": 1, "ts": 9500 },
+
+    { "ph": "f", "name": "handoff", "cat": "flow", "id": "h1", "pid": 1, "tid": 2, "ts": 10000 },
+    { "ph": "X", "name": "Render", "cat": "gfx", "pid": 1, "tid": 2, "ts": 20000, "dur": 20000 },
+
+    { "ph": "X", "name": "Busy", "cat": "gfx", "pid": 1, "tid": 3, "ts": 5000, "dur": 25000 },
+    { "ph": "f", "name": "handoff", "cat": "flow", "id": "h2", "pid": 1, "tid": 3, "ts": 10000, "bp": "e" },
+    { "ph": "X", "name": "Next", "cat": "gfx", "pid": 1, "tid": 3, "ts": 32000, "dur": 1000 }
+  ]
+}

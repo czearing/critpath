@@ -6,7 +6,7 @@ use critpath_core::{Graph, Micros, Track};
 use fitkit_core::Confidence;
 use serde_json::Value;
 
-use super::{FlowPoint, Open};
+use super::{Binding, FlowPoint, Open};
 
 /// Why a trace could not be read at all.
 #[derive(Debug)]
@@ -72,8 +72,28 @@ pub fn at(event: &Value) -> Option<Micros> {
 }
 
 /// Read one flow endpoint. Its `id` may be a string or a number in the wild.
-pub fn flow(event: &Value) -> Option<FlowPoint> {
-    Some(FlowPoint { id: identity(event)?, track: track(event)?, at: number(event, "ts")? })
+///
+/// The phase decides where the endpoint attaches, and the format is explicit about it. A start
+/// leaves from the work containing it. A step is stated to attach to the enclosing work. An end
+/// attaches to the next work to begin, unless it carries the binding point that says otherwise.
+///
+/// `bp` has exactly one legal value, so any other is a statement this reader does not understand
+/// rather than one it may quietly reinterpret, and it returns [`None`] to be counted as a hole.
+///
+/// The reference implementation also flips an end to enclosing when the category names one of two
+/// particular browser subsystems. That is deliberately not copied: it is a compatibility shim for
+/// one producer, marked in its own source as pending removal, and a reader that branches on
+/// category names knows a framework.
+pub fn flow(event: &Value, phase: &str) -> Option<FlowPoint> {
+    let binds = match phase {
+        "s" | "t" => Binding::Enclosing,
+        _ => match event.get("bp") {
+            None => Binding::Next,
+            Some(Value::String(point)) if point == "e" => Binding::Enclosing,
+            Some(_) => return None,
+        },
+    };
+    Some(FlowPoint { id: identity(event)?, track: track(event)?, at: number(event, "ts")?, binds })
 }
 
 /// The correlating identity of an async or flow event.
