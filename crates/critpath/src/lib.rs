@@ -105,6 +105,7 @@ pub fn analyse_for(bytes: &[u8], asked: &Asked, vocabulary: Vocabulary) -> Answe
     } else {
         Vec::new()
     };
-    let proof = findings(Observation { graph: &graph, path: &path });
+    let proof =
+        findings(Observation { graph: &graph, path: &path, declared: asked.origin.as_deref() });
     Ok(Analysis { coverage: graph.coverage, proof, path, responses: answered, graph })
 }

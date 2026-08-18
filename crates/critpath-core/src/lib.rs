@@ -8,8 +8,10 @@
 use fitkit_core::Confidence;
 
 mod ask;
+mod owner;
 
 pub use ask::{Arrival, Asked, Phases, Question, Recording};
+pub use owner::{origin_of, owner_of, Owner};
 
 /// Microseconds since the trace clock started. The unit the source reports in.
 pub type Micros = i64;
@@ -86,6 +88,15 @@ impl Activity {
     /// every program of repeating itself.
     pub fn identity(&self) -> Option<(&str, &str, &str)> {
         self.subject.as_deref().map(|subject| (self.category.as_str(), self.name.as_str(), subject))
+    }
+
+    /// Whose code this work is, relative to the origin declared under test.
+    ///
+    /// Derived from the subject the producer already wrote, so it costs one scan of a string that
+    /// is only ever read for findings, and nothing is computed for the activities nobody asks
+    /// about.
+    pub fn owner(&self, declared: &str) -> Owner {
+        owner_of(self.subject.as_deref().unwrap_or_default(), declared)
     }
 
     /// Whether the interval can support a decision.

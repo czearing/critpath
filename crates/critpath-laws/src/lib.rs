@@ -5,7 +5,7 @@
 //! about a machine, a network and a workload that the trace never made. A rule that cannot be
 //! stated without a constant does not belong in this crate.
 
-use critpath_core::{ActivityId, Graph, Micros};
+use critpath_core::{ActivityId, Graph, Micros, Owner};
 use critpath_graph::CriticalPath;
 use fitkit_core::Refusal;
 use fitkit_ledger::{ask, Citation};
@@ -22,6 +22,13 @@ pub struct Observation<'a> {
     pub graph: &'a Graph,
     /// The chain that determined when the work finished.
     pub path: &'a CriticalPath,
+    /// The origin the operator declared under test, when one was declared.
+    ///
+    /// Carried into the rules' input rather than applied to their output by the caller, so that
+    /// the one place findings are produced is also the one place they are attributed. A caller
+    /// that filtered afterwards could forget to, and a forgotten filter here means another
+    /// program's cost billed to this one.
+    pub declared: Option<&'a str>,
 }
 
 impl Observation<'_> {
@@ -131,6 +138,46 @@ impl Finding {
             Self::WaitedWhileInFlight { overlap, .. } => *overlap,
         }
     }
+
+    /// Whose code this finding is about, relative to the origin declared under test.
+    ///
+    /// Read from the subjects the finding already names, so a finding is attributed to exactly the
+    /// work it would have someone change. The strongest evidence present wins: any subject naming
+    /// the declared origin makes the whole finding the product's, since a finding about a mix of
+    /// the product's work and somebody else's is still the product's to answer for.
+    ///
+    /// A dead wait is attributed to what the chain waited *on* where the trace stated it, because
+    /// that is the work a repair would move; the waiting activity itself is a symptom and is only
+    /// consulted when nothing was stated to wait on.
+    pub fn owner(&self, graph: &Graph, declared: &str) -> Owner {
+        let subject_of = |id: &ActivityId| {
+            graph.activities.get(*id).and_then(|a| a.subject.as_deref()).unwrap_or_default()
+        };
+        let mut stated = false;
+        let mut check = |subject: &str| match critpath_core::owner_of(subject, declared) {
+            Owner::UnderTest => true,
+            Owner::Elsewhere => {
+                stated = true;
+                false
+            }
+            Owner::Unstated => false,
+        };
+        let decided = match self {
+            Self::RepeatedWork { key, .. } => check(&key.2),
+            Self::DeadWait { before, waited_on, .. } => {
+                check(subject_of(waited_on.as_ref().unwrap_or(before)))
+            }
+            Self::OffPath { activity, .. } => check(subject_of(activity)),
+            Self::WaitedWhileInFlight { during, .. } => check(subject_of(during)),
+        };
+        if decided {
+            Owner::UnderTest
+        } else if stated {
+            Owner::Elsewhere
+        } else {
+            Owner::Unstated
+        }
+    }
 }
 
 /// The trace format every rule ultimately reads through.
@@ -157,13 +204,33 @@ pub struct Silence {
 /// What the rules could and could not prove.
 #[derive(Clone, Debug, Default)]
 pub struct Proof {
-    /// Everything proved.
+    /// Everything proved about the code under test.
+    ///
+    /// When no origin was declared this is everything proved, because with nothing declared there
+    /// is nothing to attribute against and quietly guessing an owner is the failure this exists to
+    /// prevent.
     pub findings: Vec<Finding>,
+    /// Proved, but about a program other than the one under test.
+    ///
+    /// Set aside rather than deleted. A filter that silently removes evidence and one that had
+    /// nothing to remove produce the same report, and the operator has to be able to tell them
+    /// apart.
+    pub withheld: Vec<Finding>,
+    /// Proved, but about work the trace states no origin for.
+    ///
+    /// Browser, runtime and kernel internals land here, and so does anything the producer simply
+    /// did not label. Kept separate from both other lists because it is a weaker claim than
+    /// either: not shown to be the product's, and not shown not to be.
+    pub unattributed: Vec<Finding>,
     /// Rules that refused, kept so silence is never mistaken for a clean result.
     pub silent: Vec<Silence>,
 }
 
 impl Proof {
+    /// How many findings were proved in total, wherever they were filed.
+    pub fn proved(&self) -> usize {
+        self.findings.len() + self.withheld.len() + self.unattributed.len()
+    }
     /// Whether a clean bill of health can be believed.
     ///
     /// No findings and no silent rules means the trace was searched in full and nothing was found.
@@ -193,6 +260,19 @@ pub fn findings(observation: Observation<'_>) -> Proof {
     // makes the reader do the ranking the tool exists to do. Where nothing is provably owed, the
     // larger measurement leads, so proof still outranks magnitude and magnitude outranks nothing.
     proof.findings.sort_by_key(|finding| core::cmp::Reverse((finding.cost(), finding.evidence())));
+    // Attribution last, over an already ordered list, so each list keeps that order and the sort
+    // is paid once rather than three times.
+    if let Some(declared) = observation.declared {
+        let mut under_test = Vec::new();
+        for finding in core::mem::take(&mut proof.findings) {
+            match finding.owner(observation.graph, declared) {
+                Owner::UnderTest => under_test.push(finding),
+                Owner::Elsewhere => proof.withheld.push(finding),
+                Owner::Unstated => proof.unattributed.push(finding),
+            }
+        }
+        proof.findings = under_test;
+    }
     proof
 }
 

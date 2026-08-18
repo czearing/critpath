@@ -180,7 +180,9 @@ pub fn report(analysis: &Analysis, repair: Option<&Repair>) -> String {
         let _ = writeln!(
             out,
             "\n{}",
-            if analysis.proof.is_conclusive() {
+            if analysis.proof.proved() > 0 {
+                "Nothing on the chain is provably wasted by the code under test."
+            } else if analysis.proof.is_conclusive() {
                 "Nothing on the chain is provably wasted."
             } else {
                 "Nothing was proved, and not every rule was able to look."
@@ -192,6 +194,8 @@ pub fn report(analysis: &Analysis, repair: Option<&Repair>) -> String {
             let _ = writeln!(out, "  {}", sentence(analysis, finding));
         }
     }
+
+    out.push_str(&attributed(analysis));
 
     if let Some(repair) = repair {
         let _ = writeln!(out, "\n{}", plan(analysis, repair));
@@ -219,6 +223,59 @@ pub fn report(analysis: &Analysis, repair: Option<&Repair>) -> String {
         );
     }
     out
+}
+
+/// What was proved about somebody else's program, and about work with no stated owner.
+///
+/// Printed as counts and named origins rather than as a second report. The purpose is to let an
+/// operator distinguish a filter that worked from a filter that ate the evidence, which needs a
+/// number and the reason, not a repeat of every sentence.
+fn attributed(analysis: &Analysis) -> String {
+    let mut out = String::new();
+    let proof = &analysis.proof;
+    if !proof.withheld.is_empty() {
+        let mut origins: Vec<&str> =
+            proof.withheld.iter().filter_map(|finding| stated_origin(analysis, finding)).collect();
+        origins.sort_unstable();
+        origins.dedup();
+        let _ = writeln!(
+            out,
+            "\nWithheld: {} findings the trace attributes to another origin, not to the one under \
+             test ({}). They are real and they are not yours; recording with that program \
+             disabled is what removes them from the measurement rather than from the report.",
+            proof.withheld.len(),
+            origins.join(", "),
+        );
+    }
+    if !proof.unattributed.is_empty() {
+        let _ = writeln!(
+            out,
+            "\nUnattributed: {} findings about work the trace states no origin for, so they \
+             cannot be shown to be the declared origin's code or shown not to be. A producer \
+             writes a script url for script and writes none for its own internals, which is what \
+             most of these will be.",
+            proof.unattributed.len(),
+        );
+    }
+    out
+}
+
+/// The origin a withheld finding named, for saying whose program it was.
+fn stated_origin<'a>(analysis: &'a Analysis, finding: &'a Finding) -> Option<&'a str> {
+    let subject = match finding {
+        Finding::RepeatedWork { key, .. } => key.2.as_str(),
+        Finding::DeadWait { before, waited_on, .. } => {
+            let id = waited_on.unwrap_or(*before);
+            analysis.graph.activities.get(id)?.subject.as_deref()?
+        }
+        Finding::OffPath { activity, .. } => {
+            analysis.graph.activities.get(*activity)?.subject.as_deref()?
+        }
+        Finding::WaitedWhileInFlight { during, .. } => {
+            analysis.graph.activities.get(*during)?.subject.as_deref()?
+        }
+    };
+    subject.split('\u{1}').find_map(critpath_core::origin_of)
 }
 
 /// What the source recorded about the work, written out rather than thrown away.

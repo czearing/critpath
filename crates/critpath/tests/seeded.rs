@@ -848,3 +848,126 @@ fn a_producer_that_states_nothing_is_read_exactly_as_before() {
     assert_eq!(slowest.working, 900);
     assert_eq!(slowest.waiting, 600);
 }
+
+#[test]
+fn work_the_trace_attributes_to_another_origin_is_withheld_from_the_report() {
+    // Three repeats in one recording: the product's own script, a browser extension's script, and
+    // a third-party asset the product itself asked for. Only the extension is somebody else's
+    // problem, and the third party is the decoy: a tool that filters by "is this my domain" drops
+    // it, and drops a real finding with it.
+    let asked = Asked::finish().about("http://localhost:8080");
+    let analysis =
+        analyse_for(&fixture("mixed-origins.json"), &asked, Vocabulary::CHROME).expect("readable");
+
+    let named = |findings: &[Proven]| -> Vec<String> {
+        findings
+            .iter()
+            .filter_map(|finding| match finding {
+                Proven::RepeatedWork { key, .. } => Some(key.2.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+
+    let mine = named(analysis.findings());
+    assert!(
+        mine.iter().any(|s| s.contains("localhost:8080/assets/app.js")),
+        "the product's own repeated fetch must be reported: {mine:?}",
+    );
+    assert!(
+        mine.iter().any(|s| s.contains("cdn.example.com")),
+        "a third-party asset the product asked for is still the product's finding: {mine:?}",
+    );
+    assert!(
+        !mine.iter().any(|s| s.contains("chrome-extension://")),
+        "an extension's repeated fetch must not be billed to the product: {mine:?}",
+    );
+
+    let theirs = named(&analysis.proof.withheld);
+    assert_eq!(theirs.len(), 1, "exactly the extension is set aside: {theirs:?}");
+    assert!(theirs[0].contains("chrome-extension://ceffpgmgaoapphfijfinjppigbfibnnp"));
+}
+
+#[test]
+fn work_with_no_stated_origin_is_reported_apart_rather_than_as_the_products() {
+    let asked = Asked::finish().about("http://localhost:8080");
+    let analysis =
+        analyse_for(&fixture("mixed-origins.json"), &asked, Vocabulary::CHROME).expect("readable");
+    let unowned: Vec<String> = analysis
+        .proof
+        .unattributed
+        .iter()
+        .filter_map(|finding| match finding {
+            Proven::RepeatedWork { key, .. } => Some(key.1.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        unowned.iter().any(|name| name == "ResponseBodyLoader::OnStateChange"),
+        "a browser internal states no origin, so it is neither claimed nor denied: {unowned:?}",
+    );
+    assert_eq!(
+        analysis.proof.proved(),
+        analysis.findings().len()
+            + analysis.proof.withheld.len()
+            + analysis.proof.unattributed.len(),
+        "nothing may be lost by attributing it",
+    );
+}
+
+#[test]
+fn declaring_no_origin_attributes_nothing_and_reports_everything() {
+    // The filter must be something the operator turned on, never something that happens by
+    // default: with nothing declared there is no evidence of what is under test, and guessing is
+    // the exact failure this exists to prevent.
+    let open = analyse(&fixture("mixed-origins.json")).expect("readable");
+    let declared = analyse_for(
+        &fixture("mixed-origins.json"),
+        &Asked::finish().about("http://localhost:8080"),
+        Vocabulary::CHROME,
+    )
+    .expect("readable");
+    assert!(open.proof.withheld.is_empty() && open.proof.unattributed.is_empty());
+    assert_eq!(
+        open.findings().len(),
+        declared.proof.proved(),
+        "declaring an origin sorts findings and never invents or destroys one",
+    );
+    assert!(
+        open.findings().len() > declared.findings().len(),
+        "and the declared report is strictly smaller, or the filter did nothing",
+    );
+}
+
+#[test]
+fn a_withheld_finding_can_never_be_chosen_as_a_repair() {
+    let asked = Asked::finish().about("http://localhost:8080");
+    let analysis =
+        analyse_for(&fixture("mixed-origins.json"), &asked, Vocabulary::CHROME).expect("readable");
+    if let Ok(repair) = analysis.repair(8) {
+        for &index in &repair.chosen {
+            if let Proven::RepeatedWork { key, .. } = &analysis.proof.findings[index] {
+                assert!(
+                    !key.2.contains("chrome-extension://"),
+                    "a repair must never ask someone to change another program's code",
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_report_says_what_it_set_aside_and_why() {
+    let asked = Asked::finish().about("http://localhost:8080");
+    let analysis =
+        analyse_for(&fixture("mixed-origins.json"), &asked, Vocabulary::CHROME).expect("readable");
+    let text = critpath::report(&analysis, None);
+    assert!(
+        text.contains("Withheld:") && text.contains("chrome-extension://"),
+        "a filter that works and a filter that ate the evidence must not read alike:\n{text}",
+    );
+    assert!(
+        text.contains("Unattributed:"),
+        "work with no stated origin must be counted, not dropped:\n{text}",
+    );
+}

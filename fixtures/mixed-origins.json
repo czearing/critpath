@@ -1,0 +1,25 @@
+{
+  "traceEvents": [
+    { "ph": "M", "pid": 1, "tid": 1, "name": "process_name", "args": { "name": "Renderer" } },
+
+    { "ph": "X", "pid": 1, "tid": 1, "ts": 1000, "dur": 400, "name": "ResourceFetch", "cat": "loading",
+      "args": { "data": { "url": "http://localhost:8080/assets/app.js" } } },
+    { "ph": "X", "pid": 1, "tid": 1, "ts": 1500, "dur": 400, "name": "ResourceFetch", "cat": "loading",
+      "args": { "data": { "url": "http://localhost:8080/assets/app.js" } } },
+
+    { "ph": "X", "pid": 1, "tid": 1, "ts": 2000, "dur": 600, "name": "ResourceFetch", "cat": "loading",
+      "args": { "data": { "url": "chrome-extension://ceffpgmgaoapphfijfinjppigbfibnnp/SiteFactory.mjs" } } },
+    { "ph": "X", "pid": 1, "tid": 1, "ts": 2700, "dur": 600, "name": "ResourceFetch", "cat": "loading",
+      "args": { "data": { "url": "chrome-extension://ceffpgmgaoapphfijfinjppigbfibnnp/SiteFactory.mjs" } } },
+
+    { "ph": "X", "pid": 1, "tid": 1, "ts": 3400, "dur": 300, "name": "ResponseBodyLoader::OnStateChange", "cat": "blink",
+      "args": { "available": 1024 } },
+    { "ph": "X", "pid": 1, "tid": 1, "ts": 3800, "dur": 300, "name": "ResponseBodyLoader::OnStateChange", "cat": "blink",
+      "args": { "available": 1024 } },
+
+    { "ph": "X", "pid": 1, "tid": 1, "ts": 4200, "dur": 200, "name": "ResourceFetch", "cat": "loading",
+      "args": { "data": { "url": "https://cdn.example.com/vendor.js", "frame_url": "http://localhost:8080/" } } },
+    { "ph": "X", "pid": 1, "tid": 1, "ts": 4500, "dur": 200, "name": "ResourceFetch", "cat": "loading",
+      "args": { "data": { "url": "https://cdn.example.com/vendor.js", "frame_url": "http://localhost:8080/" } } }
+  ]
+}

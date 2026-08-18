@@ -381,10 +381,10 @@ fn note_origins(value: &Value, origins: &mut Vec<(String, usize)>, depth: usize)
     }
     match value {
         Value::String(text) => {
-            if let Some(origin) = origin_of(text) {
-                match origins.iter_mut().find(|(seen, _)| *seen == origin) {
+            if let Some(origin) = critpath_core::origin_of(text) {
+                match origins.iter_mut().find(|(seen, _)| seen == origin) {
                     Some((_, count)) => *count += 1,
-                    None => origins.push((origin, 1)),
+                    None => origins.push((origin.to_owned(), 1)),
                 }
             }
         }
@@ -395,24 +395,6 @@ fn note_origins(value: &Value, origins: &mut Vec<(String, usize)>, depth: usize)
         }
         _ => {}
     }
-}
-
-/// The scheme-and-host prefix of a URL, without parsing one.
-///
-/// Deliberately syntactic. Anything shaped `scheme://host` is an origin, which covers http, https
-/// and the extension and internal schemes a browser also writes -- the point of the census is to
-/// show the operator every origin present, including the ones they will want to exclude.
-fn origin_of(text: &str) -> Option<String> {
-    let split = text.find("://")?;
-    if split == 0 || !text[..split].bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
-        return None;
-    }
-    let rest = &text[split + 3..];
-    let end = rest.find('/').unwrap_or(rest.len());
-    if end == 0 {
-        return None;
-    }
-    Some(format!("{}://{}", &text[..split], &rest[..end]))
 }
 
 /// Record one interval.

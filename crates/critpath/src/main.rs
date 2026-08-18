@@ -16,9 +16,11 @@ fn usage() {
     eprintln!("                   presumes nothing about how the recording was made.");
     eprintln!("  --for response   how the product answered what you did to it. Refused unless the");
     eprintln!("                   recording actually contains something you did.");
-    eprintln!("  --origin URL     which origin is the thing under test. A declaration, not a");
-    eprintln!("                   filter: an origin the recording never names is refused rather");
-    eprintln!("                   than quietly matched against nothing.");
+    eprintln!("  --origin URL     which origin is the thing under test. Declare it and findings");
+    eprintln!("                   the trace attributes to another program -- an extension, an");
+    eprintln!("                   injected script -- are withheld and counted instead of ranked.");
+    eprintln!("                   An origin the recording never names is refused rather than");
+    eprintln!("                   quietly matched against nothing.");
     eprintln!("  --producer NAME  how the tool that wrote the trace spells an arrival and a");
     eprintln!("                   presentation. Defaults to chrome.");
     eprintln!("  --budget N       how many changes you can afford. Required to get a repair plan,");
