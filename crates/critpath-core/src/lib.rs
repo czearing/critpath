@@ -7,6 +7,10 @@
 
 use fitkit_core::Confidence;
 
+mod ask;
+
+pub use ask::{Asked, Question, Recording};
+
 /// Microseconds since the trace clock started. The unit the source reports in.
 pub type Micros = i64;
 
@@ -202,6 +206,8 @@ pub struct Graph {
     pub edges: Vec<Edge>,
     /// What could not be read.
     pub coverage: Coverage,
+    /// What the recording was found to contain, for deciding which questions it can answer.
+    pub recording: Recording,
 }
 
 impl Graph {

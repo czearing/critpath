@@ -18,9 +18,9 @@ use fitkit_core::{Answer, Refusal};
 
 mod render;
 
-pub use critpath_core::EdgeKind;
+pub use critpath_core::{Asked, EdgeKind, Question, Recording};
 pub use critpath_laws::{Finding as Proven, Silence};
-pub use critpath_trace::ParseError;
+pub use critpath_trace::{read_as, ParseError, Vocabulary};
 pub use render::report;
 
 /// Everything critpath concluded about one trace.
@@ -60,7 +60,22 @@ impl Analysis {
 /// that declines is not an error: it is recorded in [`Proof::silent`], so one unanswerable
 /// question never suppresses the answers to the others.
 pub fn analyse(bytes: &[u8]) -> Answer<Analysis> {
-    let mut graph = critpath_trace::read(bytes).map_err(|error| match error {
+    analyse_for(bytes, &Asked::finish(), Vocabulary::default())
+}
+
+/// Read a trace and analyse it, for a stated question about a stated origin.
+///
+/// The question does not change how anything is measured -- the same graph, chain and rules apply
+/// to all of them. What it changes is whether the recording is allowed to answer at all. A
+/// recording of an idle page will happily produce a confident, detailed report about loading when
+/// what was asked was whether a menu is slow, and that report is worse than silence.
+///
+/// # Errors
+///
+/// A refusal when the bytes are not a trace, when the chain cannot be recovered, or when the
+/// recording lacks the evidence the question presumes.
+pub fn analyse_for(bytes: &[u8], asked: &Asked, vocabulary: Vocabulary) -> Answer<Analysis> {
+    let mut graph = critpath_trace::read_as(bytes, vocabulary).map_err(|error| match error {
         ParseError::NotJson(_) => Refusal::uninformative(
             "the input is not JSON; a browser writes a protobuf trace unless asked for JSON",
         ),
@@ -68,6 +83,9 @@ pub fn analyse(bytes: &[u8]) -> Answer<Analysis> {
             Refusal::uninformative("the JSON carries no trace events this reader understands")
         }
     })?;
+    // Admissibility is checked before any analysis, so an inadmissible question costs nothing and
+    // cannot be answered by accident.
+    asked.admits(&graph.recording)?;
     graph.coverage.contradicted += critpath_graph::contradictions(&graph);
     let path = critical_path(&graph)?;
     let proof = findings(Observation { graph: &graph, path: &path });

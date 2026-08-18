@@ -13,8 +13,10 @@ use serde_json::Value;
 mod bind;
 mod correlate;
 mod read;
+mod vocabulary;
 
 pub use read::ParseError;
+pub use vocabulary::Vocabulary;
 
 /// Phases that carry an interval on a call stack and are therefore read.
 const INTERVAL: [&str; 3] = ["X", "B", "E"];
@@ -65,6 +67,15 @@ struct Open {
 ///
 /// [`ParseError`] when the bytes are not JSON, or are JSON of no shape this format defines.
 pub fn read(bytes: &[u8]) -> Result<Graph, ParseError> {
+    read_as(bytes, Vocabulary::default())
+}
+
+/// Read a trace into a graph, using one producer's spelling for arrivals and presentations.
+///
+/// # Errors
+///
+/// [`ParseError`] when the bytes are not JSON, or are JSON of no shape this format defines.
+pub fn read_as(bytes: &[u8], vocabulary: Vocabulary) -> Result<Graph, ParseError> {
     let events = read::events(bytes)?;
     let mut graph = Graph::default();
     let mut open: Vec<Open> = Vec::new();
@@ -73,6 +84,7 @@ pub fn read(bytes: &[u8]) -> Result<Graph, ParseError> {
     let mut marks: Vec<correlate::Mark> = Vec::new();
     let mut window_closes = Micros::MIN;
     let mut window_opens = Micros::MAX;
+    let mut origins: Vec<(String, usize)> = Vec::new();
 
     for event in &events {
         let Some(phase) = event.get("ph").and_then(Value::as_str) else {
@@ -83,6 +95,11 @@ pub fn read(bytes: &[u8]) -> Result<Graph, ParseError> {
             let dur = event.get("dur").and_then(Value::as_i64).unwrap_or(0).max(0);
             window_closes = window_closes.max(ts.saturating_add(dur));
         }
+        // The census runs inside the pass that already visits every event, so asking what a
+        // recording contains costs nothing and can never be skipped for speed. It is taken BEFORE
+        // the ignored-phase check on purpose: a presentation is a mark, marks carry no work, and
+        // so the only place that evidence exists is in an event the graph itself discards.
+        census(event, vocabulary, &mut graph.recording, &mut origins);
         if IGNORED.contains(&phase) {
             continue;
         }
@@ -137,7 +154,89 @@ pub fn read(bytes: &[u8]) -> Result<Graph, ParseError> {
     graph.coverage.unbound_flows += unbound;
     graph.edges.sort_unstable_by_key(|e| (e.from, e.to, e.kind == EdgeKind::Serial));
     graph.edges.dedup_by_key(|e| (e.from, e.to));
+    origins.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    graph.recording.origins = origins;
     Ok(graph)
+}
+
+/// Count what this event proves the recording contains.
+///
+/// Three facts, none of them a judgement: whether a person did something, whether anything reached
+/// the screen, and which origins are named. All three are read from what the producer already
+/// wrote; none is inferred, and none is compared against a cutoff.
+fn census(
+    event: &Value,
+    vocabulary: Vocabulary,
+    recording: &mut critpath_core::Recording,
+    origins: &mut Vec<(String, usize)>,
+) {
+    let name = event.get("name").and_then(Value::as_str).unwrap_or_default();
+    if vocabulary.is_presentation(name) {
+        recording.presentations += 1;
+    }
+    if vocabulary.is_stimulus(name) {
+        let kind = event
+            .get("args")
+            .and_then(|args| args.get("data"))
+            .and_then(|data| data.get(vocabulary.stimulus_kind))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        // A producer emits one event name for every dispatch, so a page finishing loading and a
+        // person clicking arrive spelled alike. Only the kind separates them, and counting
+        // dispatches rather than kinds is what would let an idle recording claim it held
+        // interactions.
+        if vocabulary.is_from_a_person(kind) {
+            recording.stimuli += 1;
+        }
+    }
+    if let Some(args) = event.get("args") {
+        note_origins(args, origins, 0);
+    }
+}
+
+/// Add every origin named anywhere in this event's arguments.
+///
+/// Depth-limited because argument trees are producer-defined and a response header block can nest
+/// arbitrarily; the origins that matter are stated near the top, and an unbounded walk would make
+/// the census cost scale with payload size rather than with event count.
+fn note_origins(value: &Value, origins: &mut Vec<(String, usize)>, depth: usize) {
+    if depth > 3 {
+        return;
+    }
+    match value {
+        Value::String(text) => {
+            if let Some(origin) = origin_of(text) {
+                match origins.iter_mut().find(|(seen, _)| *seen == origin) {
+                    Some((_, count)) => *count += 1,
+                    None => origins.push((origin, 1)),
+                }
+            }
+        }
+        Value::Object(fields) => {
+            for nested in fields.values() {
+                note_origins(nested, origins, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The scheme-and-host prefix of a URL, without parsing one.
+///
+/// Deliberately syntactic. Anything shaped `scheme://host` is an origin, which covers http, https
+/// and the extension and internal schemes a browser also writes -- the point of the census is to
+/// show the operator every origin present, including the ones they will want to exclude.
+fn origin_of(text: &str) -> Option<String> {
+    let split = text.find("://")?;
+    if split == 0 || !text[..split].bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return None;
+    }
+    let rest = &text[split + 3..];
+    let end = rest.find('/').unwrap_or(rest.len());
+    if end == 0 {
+        return None;
+    }
+    Some(format!("{}://{}", &text[..split], &rest[..end]))
 }
 
 /// Record one interval.

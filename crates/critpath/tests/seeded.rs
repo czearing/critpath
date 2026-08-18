@@ -4,7 +4,7 @@
 //! reports the decoy is wrong in the way that matters most here, because a tool that cries wolf on
 //! work nobody needs to fix is worse than no tool at all.
 
-use critpath::{analyse, EdgeKind, Proven};
+use critpath::{analyse, analyse_for, Asked, EdgeKind, Proven, Vocabulary};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/").to_owned() + name;
@@ -533,5 +533,69 @@ fn a_value_two_different_things_share_is_not_an_identity() {
         named("data.requestId"),
         vec![60_000],
         "a genuine identity is not superseded: nothing else explains both of its moments",
+    );
+}
+
+#[test]
+fn a_recording_of_nobody_doing_anything_cannot_report_on_interaction() {
+    // The failure this prevents is not a wrong number, it is a confident right number about the
+    // wrong thing. Asked whether opening a menu is slow, a recording of an idle page will produce
+    // a detailed, accurate report about loading -- and the operator reads it as "checked, fine".
+    // Three dispatches are present here and none came from a person; that distinction is the
+    // entire finding.
+    let idle = fixture("no-interaction.json");
+    let refusal = analyse_for(&idle, &Asked::response(), Vocabulary::CHROME)
+        .expect_err("nobody interacted, so nothing about interaction can be concluded");
+    assert!(
+        refusal.to_string().contains("no interaction was performed"),
+        "the refusal must say the evidence is missing, not that nothing is wrong: {refusal}",
+    );
+    assert!(
+        analyse_for(&idle, &Asked::finish(), Vocabulary::CHROME).is_ok(),
+        "and one unanswerable question must never suppress an answerable one",
+    );
+}
+
+#[test]
+fn a_recording_of_someone_clicking_is_admitted() {
+    // The decoy: this fixture also holds a `load` dispatch, spelled by the producer exactly like
+    // the click. If dispatches were counted rather than kinds, the fixture above would pass too
+    // and the gate would be worthless.
+    let analysis =
+        analyse_for(&fixture("interaction.json"), &Asked::response(), Vocabulary::CHROME)
+            .expect("a person clicked and a frame was presented");
+    assert_eq!(analysis.graph.recording.stimuli, 1, "one click, and the load is not a person");
+    assert_eq!(analysis.graph.recording.presentations, 1);
+}
+
+#[test]
+fn an_origin_the_recording_never_names_is_refused_rather_than_matched_against_nothing() {
+    let asked = Asked::finish().about("https://not-here.test");
+    let refusal = analyse_for(&fixture("interaction.json"), &asked, Vocabulary::CHROME)
+        .expect_err("that origin is absent from the recording");
+    assert!(
+        refusal.to_string().contains("never names the origin"),
+        "a mistyped origin must not silently produce an empty report: {refusal}",
+    );
+    let right = Asked::finish().about("https://app.test");
+    assert!(
+        analyse_for(&fixture("interaction.json"), &right, Vocabulary::CHROME).is_ok(),
+        "the origin the recording does name is accepted",
+    );
+}
+
+#[test]
+fn a_producer_whose_spelling_is_unknown_answers_for_the_finish_and_refuses_the_rest() {
+    // Presets carry a producer's vocabulary, never a judgement. A reader that does not know how
+    // this producer spells an arrival must refuse to speak about arrivals -- and must still say
+    // everything the trace states plainly.
+    let trace = fixture("interaction.json");
+    assert!(
+        analyse_for(&trace, &Asked::finish(), Vocabulary::UNKNOWN).is_ok(),
+        "the finish needs no vocabulary at all",
+    );
+    assert!(
+        analyse_for(&trace, &Asked::response(), Vocabulary::UNKNOWN).is_err(),
+        "an unknown spelling must refuse, never guess",
     );
 }

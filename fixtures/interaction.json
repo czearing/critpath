@@ -1,0 +1,19 @@
+{
+  "traceEvents": [
+    { "ph": "M", "name": "thread_name", "pid": 1, "tid": 1, "args": { "name": "main" } },
+
+    { "ph": "X", "name": "RunTask", "cat": "toplevel", "pid": 1, "tid": 1, "ts": 1000, "dur": 500,
+      "args": { "data": { "url": "https://app.test/main.js" } } },
+
+    { "ph": "I", "name": "EventDispatch", "cat": "devtools.timeline", "s": "t", "pid": 1, "tid": 1, "ts": 1100,
+      "args": { "data": { "type": "load" } } },
+
+    { "ph": "I", "name": "EventDispatch", "cat": "devtools.timeline", "s": "t", "pid": 1, "tid": 1, "ts": 2000,
+      "args": { "data": { "type": "click" } } },
+    { "ph": "X", "name": "RunTask", "cat": "toplevel", "pid": 1, "tid": 1, "ts": 2000, "dur": 900,
+      "args": { "data": { "url": "https://app.test/menu.js" } } },
+
+    { "ph": "R", "name": "FramePresented", "cat": "cc,benchmark", "pid": 1, "tid": 1, "ts": 3500,
+      "args": { "environment": "browser" } }
+  ]
+}
