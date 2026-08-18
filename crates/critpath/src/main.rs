@@ -9,7 +9,7 @@ use critpath::{Asked, Question, Vocabulary};
 fn usage() {
     eprintln!(
         "usage: critpath <trace.json> [--for finish|response] [--origin URL] \
-         [--producer chrome|unknown] [--budget N]"
+         [--producer chrome|unknown] [--maps DIR] [--budget N]"
     );
     eprintln!();
     eprintln!("  --for finish     why the recording finished when it did. The default, because it");
@@ -23,6 +23,11 @@ fn usage() {
     eprintln!("                   quietly matched against nothing.");
     eprintln!("  --producer NAME  how the tool that wrote the trace spells an arrival and a");
     eprintln!("                   presentation. Defaults to chrome.");
+    eprintln!("  --maps DIR       a directory of source maps from the build that was measured.");
+    eprintln!("                   Findings are then placed on the exact original line, and time");
+    eprintln!("                   resolving into an installed dependency is reported as that");
+    eprintln!("                   dependency's. Maps from another build are refused rather than");
+    eprintln!("                   resolved, because they would resolve to the wrong offsets.");
     eprintln!("  --budget N       how many changes you can afford. Required to get a repair plan,");
     eprintln!("                   because how many is affordable is not a fact about the trace.");
 }
@@ -35,6 +40,7 @@ fn main() -> ExitCode {
     };
 
     let mut budget = None;
+    let mut maps = None;
     let mut asked = Asked::finish();
     let mut vocabulary = Vocabulary::default();
     while let Some(flag) = args.next() {
@@ -63,6 +69,13 @@ fn main() -> ExitCode {
                 };
                 asked.origin = Some(origin);
             }
+            "--maps" => {
+                let Some(directory) = args.next() else {
+                    eprintln!("--maps needs a directory of .map files");
+                    return ExitCode::from(2);
+                };
+                maps = Some(directory);
+            }
             "--producer" => {
                 let Some(named) = args.next().as_deref().and_then(Vocabulary::named) else {
                     eprintln!("--producer takes chrome or unknown");
@@ -90,7 +103,18 @@ fn main() -> ExitCode {
     match critpath::analyse_for(&bytes, &asked, vocabulary) {
         Ok(analysis) => {
             let repair = budget.and_then(|budget| analysis.repair(budget).ok());
-            out.push_str(&critpath::report(&analysis, repair.as_ref()));
+            // Resolution is done here rather than inside the analysis because it reads the file
+            // system, and an analysis that touches the disk is no longer a pure function of the
+            // trace it was given.
+            let isolation = maps.as_deref().map(|directory| {
+                let mut resolver = critpath::Resolver::at(directory);
+                critpath::Isolation::of(&analysis.graph, &mut resolver)
+            });
+            out.push_str(&critpath::report_isolated(
+                &analysis,
+                repair.as_ref(),
+                isolation.as_ref(),
+            ));
         }
         Err(refusal) => {
             // A refusal is an answer, so it goes to stdout and exits clean. Nothing was concluded,

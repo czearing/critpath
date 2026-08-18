@@ -9,6 +9,7 @@ dependencies = [
  "critpath-core",
  "critpath-graph",
  "critpath-laws",
+ "critpath-source",
  "critpath-trace",
  "fitkit-core",
 ]
@@ -38,6 +39,14 @@ dependencies = [
  "fitkit-core",
  "fitkit-dp",
  "fitkit-ledger",
+]
+
+[[package]]
+name = "critpath-source"
+version = "0.1.0"
+dependencies = [
+ "critpath-core",
+ "serde_json",
 ]
 
 [[package]]

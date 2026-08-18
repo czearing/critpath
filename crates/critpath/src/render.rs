@@ -5,6 +5,170 @@ use core::fmt::Write as _;
 use critpath_laws::{Finding, Repair};
 
 use crate::Analysis;
+use crate::{Fixability, Isolation};
+
+/// The part of an original line worth showing, centred on the position that resolved.
+///
+/// A resolved line is usually short enough to print whole. Sometimes it is a whole minified
+/// library on one line, and printing that buries the report in the one place it was most useful.
+/// The window is centred on the column the map returned, because that column is the answer -- it
+/// is what makes a position inside a single-line bundle mean anything at all.
+///
+/// This is a display width and not a rule. Nothing here decides what is reported, only how much of
+/// a line is shown, and every truncation says so.
+fn excerpt(text: &str, column: u32) -> String {
+    const WIDTH: usize = 120;
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= WIDTH {
+        return trimmed.to_owned();
+    }
+    let characters: Vec<char> = text.chars().collect();
+    let at = (column.saturating_sub(1) as usize).min(characters.len());
+    let from = at.saturating_sub(WIDTH / 2);
+    let to = (from + WIDTH).min(characters.len());
+    let window: String = characters[from..to].iter().collect();
+    format!(
+        "{}{}{}",
+        if from > 0 { "..." } else { "" },
+        window.trim(),
+        if to < characters.len() { "..." } else { "" },
+    )
+}
+
+/// Which activity a finding is about, for the purpose of placing it in source.
+///
+/// The same choice the ownership rule makes, and for the same reason: a wait is placed at the work
+/// it waited on, because that is the code a repair would move, and the waiting interval is only a
+/// symptom of it.
+fn subject_activity(finding: &Finding) -> Option<critpath_core::ActivityId> {
+    match finding {
+        Finding::RepeatedWork { occurrences, .. } => occurrences.first().copied(),
+        Finding::DeadWait { before, waited_on, .. } => Some(waited_on.unwrap_or(*before)),
+        Finding::OffPath { activity, .. } => Some(*activity),
+        Finding::WaitedWhileInFlight { during, .. } => Some(*during),
+    }
+}
+
+/// The line one finding is about, when the build stated enough to reach it.
+///
+/// Silent when it did not. A finding without a place is still a finding, and printing "unknown
+/// location" under every one of them would bury the ones that do have a place.
+fn placed(isolation: &Isolation, finding: &Finding) -> String {
+    let Some(id) = subject_activity(finding) else { return String::new() };
+    let Some((at, depth)) = isolation.at(id) else { return String::new() };
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "    At {}{}{}",
+        at.at(),
+        if depth == 0 { "" } else { ", the call that ran it" },
+        if isolation.is_proved(id) {
+            ""
+        } else {
+            " (position from the map alone; the source there does not name this function)"
+        },
+    );
+    if let Some(text) = at.text.as_deref() {
+        let _ = writeln!(out, "      {}", excerpt(text, at.column));
+    }
+    let _ = writeln!(
+        out,
+        "      This is {}{}.",
+        at.fixability().word(),
+        match at.package.as_deref() {
+            Some(package) => format!(
+                ", {package}, so it cannot be edited here: the moves are configuring it, \
+                 upgrading it, or not calling it"
+            ),
+            None => String::new(),
+        },
+    );
+    out
+}
+
+/// Where the measured time actually is, by line and by dependency.
+///
+/// Printed from the same self times the rest of the report uses, so a line credited here is a line
+/// that was doing something rather than waiting on work nested inside it. Nothing in this section
+/// is a finding: it is a census of what was measured, ordered, which is why it carries no cost
+/// claim and can never be selected as a repair.
+fn located(isolation: &Isolation) -> String {
+    let mut out = String::new();
+    let census = isolation.calibration;
+    if isolation.is_empty() {
+        let _ = writeln!(
+            out,
+            "\nNothing could be placed in source. The trace stated a position on {} interval(s), \
+             and {} script(s) had a map supplied, {} of which could be proved to be numbered the \
+             way the trace counts. A capture without the stack category states no positions at \
+             all, and a map from a different build resolves to the wrong offsets.",
+            isolation.stated, census.mapped, census.proved,
+        );
+        return out;
+    }
+    let _ = writeln!(
+        out,
+        "\nWhere the time is, by line. {} of {} stated position(s) resolved, across {} mapped \
+         script(s); the original source names the function that ran on {} of them, and does not \
+         on {}, which are marked unconfirmed below. The numbering of {} map(s) was proved by \
+         corroborating positions and {} could not be proved, so nothing from those is reported.",
+        isolation.placed,
+        isolation.stated,
+        census.mapped,
+        isolation.confirmed,
+        isolation.placed.saturating_sub(isolation.confirmed),
+        census.proved,
+        census.unproved,
+    );
+    for place in isolation.places.iter().take(10) {
+        let _ = writeln!(
+            out,
+            "  {} over {} call(s)  {}{}",
+            micros(place.cost),
+            place.calls,
+            place.at.at(),
+            if place.proved { "" } else { "  (unconfirmed)" },
+        );
+        if let Some(text) = place.at.text.as_deref() {
+            let _ = writeln!(out, "      {}", excerpt(text, place.at.column));
+        }
+    }
+    if isolation.places.len() > 10 {
+        let _ = writeln!(out, "  ... and {} more line(s).", isolation.places.len() - 10);
+    }
+
+    if isolation.dependencies.is_empty() {
+        let _ = writeln!(
+            out,
+            "\nNo measured time resolved into an installed dependency: every line placed above is \
+             {}.",
+            Fixability::Repository.word(),
+        );
+        return out;
+    }
+    let total: i64 = isolation.dependencies.iter().map(|entry| entry.cost).sum();
+    let _ = writeln!(
+        out,
+        "\nWhat your dependencies cost, {} in total across {} package(s). None of it can be \
+         edited here.",
+        micros(total),
+        isolation.dependencies.len(),
+    );
+    for entry in isolation.dependencies.iter().take(10) {
+        let _ = writeln!(
+            out,
+            "  {} over {} call(s) on {} line(s)  {}",
+            micros(entry.cost),
+            entry.calls,
+            entry.lines,
+            entry.package,
+        );
+    }
+    if isolation.dependencies.len() > 10 {
+        let _ = writeln!(out, "  ... and {} more package(s).", isolation.dependencies.len() - 10);
+    }
+    out
+}
 
 /// Microseconds, written the way people read them.
 /// A subject as a person reads it.
@@ -140,6 +304,19 @@ fn interactions(analysis: &Analysis) -> String {
 
 /// A plain-English report, including what could not be concluded.
 pub fn report(analysis: &Analysis, repair: Option<&Repair>) -> String {
+    report_isolated(analysis, repair, None)
+}
+
+/// The same report, with every finding placed in source where the build allows it.
+///
+/// Placement is additive and opt-in. Without maps the report is exactly what it always was, which
+/// matters more than it sounds: the sentences here are the tool's claims, and a change that
+/// silently reworded them would make every earlier report unreproducible.
+pub fn report_isolated(
+    analysis: &Analysis,
+    repair: Option<&Repair>,
+    isolation: Option<&Isolation>,
+) -> String {
     let path = &analysis.path;
     let mut out = String::new();
     out.push_str(&interactions(analysis));
@@ -192,10 +369,16 @@ pub fn report(analysis: &Analysis, repair: Option<&Repair>) -> String {
         let _ = writeln!(out, "\nWhat is provably wrong:");
         for finding in analysis.findings() {
             let _ = writeln!(out, "  {}", sentence(analysis, finding));
+            if let Some(isolation) = isolation {
+                out.push_str(&placed(isolation, finding));
+            }
         }
     }
 
     out.push_str(&attributed(analysis));
+    if let Some(isolation) = isolation {
+        out.push_str(&located(isolation));
+    }
 
     if let Some(repair) = repair {
         let _ = writeln!(out, "\n{}", plan(analysis, repair));

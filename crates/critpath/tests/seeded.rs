@@ -971,3 +971,110 @@ fn the_report_says_what_it_set_aside_and_why() {
         "work with no stated origin must be counted, not dropped:\n{text}",
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Placing a finding on the exact original line.
+// ---------------------------------------------------------------------------------------------
+
+/// The directory of maps that belong to the `placed.json` build.
+fn maps() -> String {
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/maps").to_owned()
+}
+
+fn placed() -> (critpath::Analysis, critpath::Isolation) {
+    let analysis = analyse(&fixture("placed.json")).expect("readable");
+    let mut resolver = critpath::Resolver::at(maps());
+    let isolation = critpath::Isolation::of(&analysis.graph, &mut resolver);
+    (analysis, isolation)
+}
+
+#[test]
+fn a_finding_is_placed_on_the_original_line_the_build_states() {
+    let (analysis, isolation) = placed();
+    let text = critpath::report_isolated(&analysis, None, Some(&isolation));
+    assert!(
+        text.contains("At src/App.tsx:2"),
+        "the whole point is naming the line somebody would open:\n{text}",
+    );
+    assert!(
+        text.contains("const render = () => {"),
+        "and showing the line, so a wrong resolution is visible rather than plausible:\n{text}",
+    );
+}
+
+#[test]
+fn work_that_states_no_position_is_placed_at_the_call_that_ran_it() {
+    let (_, isolation) = placed();
+    // Layout states no url of its own. It is only placeable through the call enclosing it, which
+    // is the relation that lets a chain of anonymous frames be located at all.
+    let layout = 1;
+    let (at, depth) = isolation.at(layout).expect("nesting must carry the position outward");
+    assert_eq!(at.at(), "src/App.tsx:2");
+    assert_eq!(depth, 1, "and the report must say it came from the caller, not from the work");
+}
+
+#[test]
+fn a_line_inside_an_installed_dependency_is_reported_as_unfixable_here() {
+    let (_, isolation) = placed();
+    let lodash = isolation
+        .dependencies
+        .iter()
+        .find(|entry| entry.package == "lodash")
+        .expect("a resolved node_modules path names its package");
+    assert_eq!(lodash.cost, 500, "charged what was measured, not what was guessed");
+    assert!(isolation
+        .places
+        .iter()
+        .any(|place| place.at.fixability() == critpath::Fixability::Dependency));
+}
+
+#[test]
+fn a_position_the_source_contradicts_is_marked_rather_than_reported_as_exact() {
+    let (_, isolation) = placed();
+    // `ghost` resolves to a real line of a real file whose text does not name it. That is exactly
+    // how an off-by-one looks, so it must never print as a confirmed location.
+    let ghost = isolation
+        .places
+        .iter()
+        .find(|place| place.at.source == "src/App.tsx" && place.at.line == 1)
+        .expect("it still resolves; the question is whether it is believed");
+    assert!(!ghost.proved, "an uncorroborated position must be marked");
+    assert_eq!(isolation.calibration.disagreements, 1);
+    assert_eq!(isolation.calibration.agreements, 3);
+}
+
+#[test]
+fn a_script_with_no_map_is_placed_nowhere_at_all() {
+    let (_, isolation) = placed();
+    assert_eq!(isolation.stated, 5, "every stated position is counted");
+    assert_eq!(isolation.placed, 4, "and the one with no map is not quietly placed somewhere");
+    assert!(
+        !isolation.places.iter().any(|place| place.at.source.contains("vendor")),
+        "a missing map must never resolve through another script's map",
+    );
+}
+
+#[test]
+fn maps_are_opt_in_and_the_report_without_them_is_unchanged() {
+    let analysis = analyse(&fixture("placed.json")).expect("readable");
+    let plain = critpath::report(&analysis, None);
+    let same = critpath::report_isolated(&analysis, None, None);
+    assert_eq!(plain, same, "no maps must mean byte-for-byte the report that always printed");
+    assert!(!plain.contains("At src/"), "and no placement leaks into it");
+}
+
+#[test]
+fn placement_never_changes_what_was_proved() {
+    let (analysis, isolation) = placed();
+    let with = critpath::report_isolated(&analysis, None, Some(&isolation));
+    let without = critpath::report(&analysis, None);
+    assert_eq!(
+        analysis.proof.proved(),
+        analyse(&fixture("placed.json")).expect("readable").proof.proved(),
+        "resolving positions is a lookup and must not alter a single finding",
+    );
+    assert!(with.len() > without.len(), "it only ever adds");
+    for line in without.lines() {
+        assert!(with.contains(line), "and never removes or rewords one: {line}");
+    }
+}

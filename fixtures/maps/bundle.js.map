@@ -1,0 +1,11 @@
+{
+  "version": 3,
+  "file": "bundle.js",
+  "sources": ["src/App.tsx", "node_modules/lodash/debounce.js"],
+  "sourcesContent": [
+    "import x;\nconst render = () => {\n};\n",
+    "function debounce() {\n}\n"
+  ],
+  "names": [],
+  "mappings": "AAAA;ACAA;ADCA"
+}

@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "A defect that can be placed, and three decoys that must not be placed wrongly.",
+    "Layout repeats identically inside two calls to render, so the finding is about work that",
+    "states no position of its own and can only be placed by the call enclosing it.",
+    "debounce resolves into an installed dependency and must be reported as unfixable here.",
+    "ghost resolves to a real line whose text does not name it, so it must stay unconfirmed.",
+    "orphan names a script no map was supplied for, and must be placed nowhere at all."
+  ],
+  "traceEvents": [
+    { "ph": "M", "name": "thread_name", "pid": 7, "tid": 7, "args": { "name": "main" } },
+
+    { "ph": "X", "name": "FunctionCall", "cat": "devtools.timeline", "pid": 7, "tid": 7, "ts": 0, "dur": 2000,
+      "args": { "data": { "url": "https://app.test/assets/bundle.js", "lineNumber": 3, "columnNumber": 1, "functionName": "render" } } },
+    { "ph": "X", "name": "Layout", "cat": "devtools.timeline", "pid": 7, "tid": 7, "ts": 100, "dur": 1000,
+      "args": { "node": "#root" } },
+
+    { "ph": "X", "name": "FunctionCall", "cat": "devtools.timeline", "pid": 7, "tid": 7, "ts": 2000, "dur": 2000,
+      "args": { "data": { "url": "https://app.test/assets/bundle.js", "lineNumber": 3, "columnNumber": 1, "functionName": "render" } } },
+    { "ph": "X", "name": "Layout", "cat": "devtools.timeline", "pid": 7, "tid": 7, "ts": 2100, "dur": 1000,
+      "args": { "node": "#root" } },
+
+    { "ph": "X", "name": "FunctionCall", "cat": "devtools.timeline", "pid": 7, "tid": 7, "ts": 4000, "dur": 500,
+      "args": { "data": { "url": "https://app.test/assets/bundle.js", "lineNumber": 2, "columnNumber": 1, "functionName": "debounce" } } },
+
+    { "ph": "X", "name": "FunctionCall", "cat": "devtools.timeline", "pid": 7, "tid": 7, "ts": 4500, "dur": 100,
+      "args": { "data": { "url": "https://app.test/assets/bundle.js", "lineNumber": 1, "columnNumber": 1, "functionName": "ghost" } } },
+
+    { "ph": "X", "name": "FunctionCall", "cat": "devtools.timeline", "pid": 7, "tid": 7, "ts": 4600, "dur": 100,
+      "args": { "data": { "url": "https://cdn.test/vendor.js", "lineNumber": 9, "columnNumber": 1, "functionName": "orphan" } } }
+  ]
+}

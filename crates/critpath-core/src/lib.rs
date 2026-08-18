@@ -9,9 +9,11 @@ use fitkit_core::Confidence;
 
 mod ask;
 mod owner;
+mod site;
 
 pub use ask::{Arrival, Asked, Phases, Question, Recording};
 pub use owner::{origin_of, owner_of, Owner};
+pub use site::{site_of, Site};
 
 /// Microseconds since the trace clock started. The unit the source reports in.
 pub type Micros = i64;
@@ -328,6 +330,36 @@ impl Graph {
             }
         }
         self_time
+    }
+
+    /// The activity that most closely encloses each one, per track.
+    ///
+    /// Work nested inside another ran because that work ran, so the innermost interval enclosing a
+    /// piece of work is what invoked it. That is the only relation in a trace that can carry a
+    /// stated code position outward: a producer writes the script and line of the function it is
+    /// about to call, and everything that call goes on to do is recorded as separate, unnamed
+    /// intervals nested inside it. Following this chain upward is therefore how an activity with
+    /// no position of its own reaches the one that caused it.
+    ///
+    /// Concurrent work encloses nothing and is enclosed by nothing, since it is allowed to overlap
+    /// and its position on a track is not a nesting.
+    pub fn enclosures(&self) -> Vec<Option<ActivityId>> {
+        let mut parent = vec![None; self.activities.len()];
+        for (_, ids) in self.by_track() {
+            let mut stack: Vec<ActivityId> = Vec::new();
+            for id in ids {
+                let here = &self.activities[id];
+                if here.concurrent {
+                    continue;
+                }
+                while stack.last().is_some_and(|&open| self.activities[open].end <= here.start) {
+                    stack.pop();
+                }
+                parent[id] = stack.last().copied();
+                stack.push(id);
+            }
+        }
+        parent
     }
 
     /// The given activities together with everything that ran nested inside them.
