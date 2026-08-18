@@ -28,6 +28,48 @@ pub struct Arrival {
     /// interaction that was fast, and collapsing the two would be the same mistake as reporting an
     /// empty finding list for a recording that holds no interactions at all.
     pub activity: Option<ActivityId>,
+    /// The producer's own identity for the physical interaction this belongs to.
+    ///
+    /// One press of one finger emits several events, and a producer that groups them says so. Two
+    /// arrivals sharing this are one interaction and must be reported once; [`None`] means the
+    /// producer stated no grouping for this arrival.
+    pub interaction: Option<i64>,
+    /// The split the producer stated for this arrival, when it stated one.
+    pub phases: Option<Phases>,
+}
+
+/// Where an interaction's latency went, as the producer itself measured it.
+///
+/// Interaction to Next Paint is defined as input delay plus processing plus presentation delay,
+/// and a producer that states all three has answered the question directly. The three are recorded
+/// separately because they are three different repairs: input delay is the main thread being busy
+/// when the finger landed, processing is the handler, and presentation delay is everything between
+/// the handler returning and the pixels changing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Phases {
+    /// From the input reaching the machine to the program's handlers starting.
+    pub input_delay: Micros,
+    /// The program's own handlers.
+    pub processing: Micros,
+    /// From the handlers returning to the frame that answered the interaction.
+    pub presentation_delay: Micros,
+    /// The whole latency, which is what a person felt.
+    pub latency: Micros,
+}
+
+impl Phases {
+    /// Which of the three took the longest, named as the producer's own phase.
+    #[must_use]
+    pub fn largest(&self) -> (&'static str, Micros) {
+        let mut worst = ("waiting for the main thread before the handler ran", self.input_delay);
+        if self.processing > worst.1 {
+            worst = ("running the program's own handlers", self.processing);
+        }
+        if self.presentation_delay > worst.1 {
+            worst = ("waiting for the screen after the handlers returned", self.presentation_delay);
+        }
+        worst
+    }
 }
 
 /// What the recording is being asked about.
@@ -77,6 +119,11 @@ pub struct Recording {
     /// Responsiveness is measured to a presentation, so a recording holding stimuli but no
     /// presentations can time the handler and never the thing the operator waited for.
     pub presentations: usize,
+    /// Interactions the producer measured itself, hardware timestamp to answering frame.
+    ///
+    /// A producer that states one has proved something reached the screen more directly than a
+    /// separately spelled presentation event does, so this satisfies the same evidence.
+    pub stated_interactions: usize,
     /// Every origin the recording names, most-mentioned first.
     ///
     /// Kept whole rather than reduced to a guess. Which origin is under test is NOT derivable: on
@@ -168,7 +215,7 @@ impl Asked {
                      the thing in question",
                 ));
             }
-            if recording.presentations == 0 {
+            if recording.presentations == 0 && recording.stated_interactions == 0 {
                 return Err(Refusal::uninformative(
                     "the recording holds interactions but never states when anything reached the \
                      screen, so a handler can be timed and the wait the operator felt cannot; \
@@ -188,6 +235,7 @@ mod tests {
         Recording {
             stimuli: 0,
             presentations: 48,
+            stated_interactions: 0,
             origins: vec![("http://localhost:8080".to_owned(), 840)],
         }
     }
@@ -227,7 +275,8 @@ mod tests {
 
     #[test]
     fn interactions_without_a_presentation_are_refused_separately() {
-        let recording = Recording { stimuli: 3, presentations: 0, ..idle() };
+        let recording =
+            Recording { stimuli: 3, presentations: 0, stated_interactions: 0, ..idle() };
         let refusal = Asked::response().admits(&recording).expect_err("no presentation");
         assert!(
             refusal.to_string().contains("reached the screen"),

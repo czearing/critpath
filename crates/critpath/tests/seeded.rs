@@ -721,3 +721,130 @@ fn a_recording_whose_chain_is_most_of_it_is_answered_in_seconds_not_minutes() {
          the square of the chain",
     );
 }
+
+// --- A producer that measures its own interactions -------------------------------------------
+//
+// A browser measures an interaction from the hardware timestamp to the frame that answered it,
+// and groups the several events one gesture emits under one identity. Decoding that from
+// intervals when the producer has stated it is a worse measurement, not a purer one: it cannot
+// see the time before the handler ran and it cannot tell one press of one finger from three.
+// These pin the stated reading against a fixture whose every number is known.
+
+fn stated() -> critpath::Analysis {
+    analyse_for(&fixture("stated-interaction.json"), &Asked::response(), Vocabulary::CHROME)
+        .expect("the fixture states interactions")
+}
+
+#[test]
+fn one_gesture_is_one_interaction() {
+    // The fixture holds a pointerdown, a pointerup and a click all carrying identity 7, plus one
+    // event the producer marks as belonging to no interaction. A person pressed once.
+    let analysis = stated();
+    assert_eq!(analysis.responses.len(), 1, "one press of one finger is one interaction");
+    assert_eq!(analysis.graph.arrivals.len(), 1);
+    assert_eq!(
+        analysis.graph.arrivals[0].kind, "pointerdown",
+        "the member stating the longest \
+        wait is the one kept, because that is the wait the person felt"
+    );
+}
+
+#[test]
+fn an_event_belonging_to_no_interaction_is_not_reported_as_one() {
+    let analysis = stated();
+    assert!(
+        analysis.graph.arrivals.iter().all(|arrival| arrival.kind != "mousedown"),
+        "the producer stated this one belongs to no interaction; inventing one from it would \
+         report a wait nobody waited",
+    );
+}
+
+#[test]
+fn a_stated_interaction_is_measured_from_the_hardware_and_not_from_the_handler() {
+    let response = &stated().responses[0];
+    assert!(response.exact(), "the producer stated the whole wait, so it is not a lower bound");
+    assert_eq!(response.elapsed(), 100_000, "the latency the producer itself measured");
+    let phases = response.phases.expect("stated");
+    assert_eq!(phases.input_delay, 500, "queued before the handler ran");
+    assert_eq!(phases.processing, 200, "the handler itself");
+    assert_eq!(phases.presentation_delay, 99_300, "everything after the handler returned");
+}
+
+#[test]
+fn the_phases_name_which_repair_to_make() {
+    // Three phases are three different repairs, and one elapsed figure cannot tell them apart.
+    assert_eq!(stated().responses[0].phases.expect("stated").largest().1, 99_300);
+}
+
+#[test]
+fn the_chain_explains_the_work_inside_the_window() {
+    // The decoded chain is the work the interaction waited on, and the fixture seeds two linked
+    // tasks inside the window against a fifty-millisecond decoy that starts after the frame.
+    let analysis = stated();
+    let response = &analysis.responses[0];
+    let names: Vec<&str> = response
+        .chain
+        .iter()
+        .map(|&id| analysis.graph.activities[id].subject.as_deref().unwrap_or_default())
+        .collect();
+    assert!(
+        names.iter().any(|s| s.contains("open-menu.js")),
+        "the work inside the window: {names:?}"
+    );
+    assert!(names.iter().any(|s| s.contains("layout.js")), "and what it led to: {names:?}");
+    assert!(
+        !names.iter().any(|s| s.contains("after-the-frame.js")),
+        "work that ran after the frame cannot be why the frame was late: {names:?}",
+    );
+}
+
+#[test]
+fn an_envelope_is_never_a_step_of_the_chain_that_explains_it() {
+    // The producer records the same gesture several times over, each as one interval spanning the
+    // whole wait. Offered as a step, such an interval reports the entire wait as the work that
+    // ended the wait -- true, and an explanation of nothing.
+    let analysis = stated();
+    for &id in &analysis.responses[0].chain {
+        assert!(
+            analysis.graph.envelopes.binary_search(&id).is_err(),
+            "{} is a record of the interaction, not work done during it",
+            analysis.graph.activities[id].name,
+        );
+    }
+}
+
+#[test]
+fn working_and_waiting_account_for_the_whole_stated_latency() {
+    // The arithmetic must close. A chain stepping outside the window inflates working past the
+    // latency, which is exactly how the first decode of a real capture reported 367ms of work
+    // inside a 307ms wait.
+    let response = &stated().responses[0];
+    assert_eq!(
+        response.working + response.waiting,
+        response.elapsed(),
+        "every microsecond of the wait is either work on the chain or waiting on it",
+    );
+}
+
+#[test]
+fn a_stated_interaction_needs_no_separately_spelled_frame_event() {
+    // The fixture holds no presentation event at all: the producer stated where the interaction
+    // ended, which is the better evidence and is evidence of the same fact.
+    let analysis = stated();
+    assert_eq!(analysis.graph.recording.presentations, 0);
+    assert_eq!(analysis.responses.len(), 1, "refusing here would refuse the stronger evidence");
+}
+
+#[test]
+fn a_producer_that_states_nothing_is_read_exactly_as_before() {
+    // The stated reading must not reach a recording that does not state interactions. This
+    // fixture spells arrivals the other way and is timed from the handler onward, as a lower
+    // bound, with the same numbers it has always had.
+    let analysis =
+        analyse_for(&fixture("menu.json"), &Asked::response(), Vocabulary::CHROME).unwrap();
+    let slowest = &analysis.responses[0];
+    assert!(!slowest.exact(), "nothing was stated, so this is a lower bound");
+    assert_eq!(slowest.elapsed(), 1_500);
+    assert_eq!(slowest.working, 900);
+    assert_eq!(slowest.waiting, 600);
+}

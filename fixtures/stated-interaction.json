@@ -1,0 +1,26 @@
+{
+  "traceEvents": [
+    { "ph": "M", "pid": 1, "tid": 1, "ts": 0, "name": "thread_name", "args": { "name": "CrRendererMain" } },
+
+    { "ph": "b", "pid": 1, "tid": 1, "ts": 1000, "id": "0x1", "cat": "devtools.timeline", "name": "EventTiming",
+      "args": { "data": { "type": "pointerdown", "interactionId": 7, "timeStamp": 10.0, "processingStart": 10.5, "processingEnd": 10.7, "duration": 100.0 } } },
+    { "ph": "e", "pid": 1, "tid": 1, "ts": 101000, "id": "0x1", "cat": "devtools.timeline", "name": "EventTiming" },
+
+    { "ph": "b", "pid": 1, "tid": 1, "ts": 2000, "id": "0x2", "cat": "devtools.timeline", "name": "EventTiming",
+      "args": { "data": { "type": "pointerup", "interactionId": 7, "timeStamp": 11.0, "processingStart": 11.2, "processingEnd": 11.4, "duration": 90.0 } } },
+    { "ph": "e", "pid": 1, "tid": 1, "ts": 92000, "id": "0x2", "cat": "devtools.timeline", "name": "EventTiming" },
+
+    { "ph": "b", "pid": 1, "tid": 1, "ts": 2000, "id": "0x3", "cat": "devtools.timeline", "name": "EventTiming",
+      "args": { "data": { "type": "click", "interactionId": 7, "timeStamp": 11.0, "processingStart": 11.5, "processingEnd": 11.9, "duration": 90.0 } } },
+    { "ph": "e", "pid": 1, "tid": 1, "ts": 92000, "id": "0x3", "cat": "devtools.timeline", "name": "EventTiming" },
+
+    { "ph": "b", "pid": 1, "tid": 1, "ts": 3000, "id": "0x4", "cat": "devtools.timeline", "name": "EventTiming",
+      "args": { "data": { "type": "mousedown", "interactionId": 0, "timeStamp": 12.0, "processingStart": 12.1, "processingEnd": 12.2, "duration": 50.0 } } },
+    { "ph": "e", "pid": 1, "tid": 1, "ts": 53000, "id": "0x4", "cat": "devtools.timeline", "name": "EventTiming" },
+
+    { "ph": "X", "pid": 1, "tid": 1, "ts": 20000, "dur": 5000, "cat": "toplevel", "name": "RunTask", "args": { "data": { "url": "https://app.test/open-menu.js" } } },
+    { "ph": "X", "pid": 1, "tid": 1, "ts": 30000, "dur": 6000, "cat": "toplevel", "name": "RunTask", "args": { "data": { "url": "https://app.test/layout.js" } } },
+
+    { "ph": "X", "pid": 1, "tid": 1, "ts": 105000, "dur": 50000, "cat": "toplevel", "name": "RunTask", "args": { "data": { "url": "https://app.test/after-the-frame.js" } } }
+  ]
+}

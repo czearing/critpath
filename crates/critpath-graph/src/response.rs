@@ -12,7 +12,7 @@
 //! feels slow. Here one reverse sweep over the order the chain already computed gives every
 //! interaction its chain at once.
 
-use critpath_core::{ActivityId, Graph, Micros};
+use critpath_core::{ActivityId, Graph, Micros, Phases};
 
 use crate::order::links;
 
@@ -34,17 +34,30 @@ pub struct Response {
     /// Time on that chain during which nothing on it was running, the wait for the screen
     /// included.
     pub waiting: Micros,
+    /// The split the producer stated for this interaction, when it stated one.
+    ///
+    /// Present means the whole latency was measured by the producer from the hardware timestamp,
+    /// so [`Response::elapsed`] is exact rather than a lower bound.
+    pub phases: Option<Phases>,
 }
 
 impl Response {
-    /// How long the person waited, from the handler starting to the screen changing.
+    /// How long the person waited, from the input arriving to the screen changing.
     ///
-    /// This is the wait that was felt, and it is measured from the handler rather than from the
-    /// hardware. A producer that also states when the input physically arrived would let the time
-    /// before the handler ran be included; when it does not, that time is unmeasured rather than
-    /// zero, and this figure is a lower bound on what the person experienced.
+    /// Exact when the producer stated the interaction, because it then measured from the moment
+    /// the input reached the machine. Otherwise measured from the handler starting, which cannot
+    /// see the time the input spent queued behind other work, and is a lower bound on what the
+    /// person experienced rather than the whole of it.
     pub fn elapsed(&self) -> Micros {
-        (self.presented - self.began).max(0)
+        match self.phases {
+            Some(phases) => phases.latency,
+            None => (self.presented - self.began).max(0),
+        }
+    }
+
+    /// Whether the whole wait was measured, rather than only the part after the handler ran.
+    pub fn exact(&self) -> bool {
+        self.phases.is_some()
     }
 }
 
@@ -52,6 +65,48 @@ impl Response {
 fn after(presentations: &[Micros], moment: Micros) -> Option<Micros> {
     let found = presentations.partition_point(|&at| at <= moment);
     presentations.get(found).copied()
+}
+
+/// Where to start decoding an interaction whose producer stated its whole window.
+///
+/// A stated interaction is recorded as one interval spanning the entire wait, from the input
+/// landing to the frame that answered it. That interval is an envelope, not work: it *contains*
+/// the handler and everything after it. Chaining forward from an envelope is meaningless, and
+/// because a parent and its own child are never a sequence, an envelope has no successors at all
+/// -- which is why decoding from it produced a chain of one activity every time and explained
+/// nothing.
+///
+/// So the chain is decoded from the work inside the window instead: the contained activity whose
+/// own onward run is longest, which is the first step of the critical path through the
+/// interaction. Confined to the window at both ends, so no step of the returned chain can be work
+/// that ran after the frame it was supposed to explain.
+fn seed(
+    graph: &Graph,
+    by_start: &[(Micros, ActivityId)],
+    tail: &[Micros],
+    envelope: ActivityId,
+    window: (Micros, Micros),
+) -> Option<ActivityId> {
+    let (from, to) = window;
+    let first = by_start.partition_point(|&(start, _)| start < from);
+    let mut best: Option<(Micros, Micros, ActivityId)> = None;
+    for &(start, id) in by_start[first..].iter().take_while(|&&(start, _)| start < to) {
+        let activity = &graph.activities[id];
+        if id == envelope
+            || graph.envelopes.binary_search(&id).is_ok()
+            || !activity.decides()
+            || activity.end > to
+            || tail[id] == Micros::MIN
+        {
+            continue;
+        }
+        // Longest onward run wins; ties go to whichever ran first, so the same recording always
+        // reports the same chain.
+        if best.map_or(true, |(seen, at, _)| tail[id] > seen || (tail[id] == seen && start < at)) {
+            best = Some((tail[id], start, id));
+        }
+    }
+    best.map(|(_, _, id)| id)
 }
 
 /// Decode every interaction's chain, in one sweep over the order the chain already needed.
@@ -67,7 +122,11 @@ fn after(presentations: &[Micros], moment: Micros) -> Option<Micros> {
 /// nothing was slow: it is the same absence [`critpath_core::Asked`] refuses on, kept absent here
 /// so the two can never be confused by a caller that skipped the question.
 pub fn responses(graph: &Graph, order: &[ActivityId]) -> Vec<Response> {
-    if graph.arrivals.is_empty() || graph.presentations.is_empty() {
+    // A producer that states an interaction's own end has already proved something reached the
+    // screen, so requiring a separately spelled presentation as well would refuse a recording that
+    // holds the better evidence.
+    let stated = graph.arrivals.iter().any(|arrival| arrival.phases.is_some());
+    if graph.arrivals.is_empty() || (graph.presentations.is_empty() && !stated) {
         return Vec::new();
     }
     let count = graph.activities.len();
@@ -106,17 +165,32 @@ pub fn responses(graph: &Graph, order: &[ActivityId]) -> Vec<Response> {
         goes_to[id] = best.1;
     }
 
+    let mut by_start: Vec<(Micros, ActivityId)> =
+        graph.activities.iter().enumerate().map(|(id, a)| (a.start, id)).collect();
+    by_start.sort_unstable();
+
     let mut found: Vec<Response> = graph
         .arrivals
         .iter()
         .enumerate()
         .filter_map(|(arrival, moment)| {
             let activity = moment.activity?;
-            let presented = deadline[activity]?;
             let began = graph.activities[activity].start;
+            // A stated interaction already knows when it ended, and that moment is the frame that
+            // answered this interaction rather than the next frame drawn for any reason. Falling
+            // back to the next presentation when the producer has stated the end would report a
+            // wait that belongs to something else.
+            let presented = match moment.phases {
+                Some(phases) => began + phases.latency,
+                None => deadline[activity]?,
+            };
 
-            let mut chain = vec![activity];
-            let mut here = activity;
+            let start = moment
+                .phases
+                .and_then(|_| seed(graph, &by_start, &tail, activity, (began, presented)))
+                .unwrap_or(activity);
+            let mut chain = vec![start];
+            let mut here = start;
             while let Some(next) = goes_to[here] {
                 chain.push(next);
                 here = next;
@@ -136,7 +210,16 @@ pub fn responses(graph: &Graph, order: &[ActivityId]) -> Vec<Response> {
             }
             waiting += (presented - reached).max(0);
 
-            Some(Response { arrival, activity, began, presented, chain, working, waiting })
+            Some(Response {
+                arrival,
+                activity,
+                began,
+                presented,
+                chain,
+                working,
+                waiting,
+                phases: moment.phases,
+            })
         })
         .collect();
 

@@ -9,7 +9,7 @@ use fitkit_core::Confidence;
 
 mod ask;
 
-pub use ask::{Arrival, Asked, Question, Recording};
+pub use ask::{Arrival, Asked, Phases, Question, Recording};
 
 /// Microseconds since the trace clock started. The unit the source reports in.
 pub type Micros = i64;
@@ -216,6 +216,15 @@ pub struct Graph {
     /// and answering that by scanning would make the cost of reporting one interaction depend on
     /// how many frames the whole recording drew.
     pub presentations: Vec<Micros>,
+    /// Activities that are the producer's record OF an interaction rather than work done during
+    /// one, sorted.
+    ///
+    /// A producer that measures an interaction itself writes it down as an interval spanning the
+    /// whole wait. That interval is an envelope: it contains the handler, the rendering and the
+    /// idle time alike. Listing one as a step of the chain explaining its own interaction would
+    /// count the whole wait as work done to end the wait, so they are marked here once and
+    /// excluded everywhere a chain is built.
+    pub envelopes: Vec<ActivityId>,
 }
 
 impl Graph {

@@ -7,6 +7,16 @@ use critpath_laws::{Finding, Repair};
 use crate::Analysis;
 
 /// Microseconds, written the way people read them.
+/// A subject as a person reads it.
+///
+/// Subjects are joined by a control character so that two of them compare equal only when the
+/// producer said exactly the same thing about both. That separator is invisible, so printing one
+/// raw runs every argument into the next and makes the evidence unreadable at the moment it
+/// matters most. Substituted only for display; the stored form is untouched.
+fn readable(subject: &str) -> String {
+    subject.replace('\u{1}', ", ")
+}
+
 fn micros(value: i64) -> String {
     if value >= 1_000 {
         format!("{:.1}ms", value as f64 / 1000.0)
@@ -44,14 +54,29 @@ fn interactions(analysis: &Analysis) -> String {
         let kind = &arrivals[response.arrival].kind;
         let _ = writeln!(
             out,
-            "\n  {} from {} to the screen: {} working, {} waiting, over {} activit{}.",
+            "\n  {} from {} to the screen{}: {} working, {} waiting, over {} activit{}.",
             micros(response.elapsed()),
             kind,
+            if response.exact() { "" } else { " (from the handler onward)" },
             micros(response.working),
             micros(response.waiting),
             response.chain.len(),
             if response.chain.len() == 1 { "y" } else { "ies" },
         );
+        // The producer's own split, when it stated one. Three phases are three different repairs,
+        // and a single elapsed figure cannot tell an operator which one to make.
+        if let Some(phases) = response.phases {
+            let _ = writeln!(
+                out,
+                "    {} before the handler ran, {} in the handler, {} waiting for the screen \
+                 after it returned.",
+                micros(phases.input_delay),
+                micros(phases.processing),
+                micros(phases.presentation_delay),
+            );
+            let (largest, cost) = phases.largest();
+            let _ = writeln!(out, "    Most of it was {largest}: {}.", micros(cost));
+        }
         let mut reached = response.began;
         for &id in &response.chain {
             let activity = &analysis.graph.activities[id];
@@ -64,7 +89,10 @@ fn interactions(analysis: &Analysis) -> String {
                 "    {} {}{}",
                 micros(activity.duration()),
                 activity.name,
-                activity.subject.as_deref().map_or(String::new(), |s| format!(" [{s}]")),
+                activity
+                    .subject
+                    .as_deref()
+                    .map_or(String::new(), |s| format!(" [{}]", readable(s))),
             );
             reached = reached.max(activity.end);
         }
@@ -96,14 +124,17 @@ fn interactions(analysis: &Analysis) -> String {
         );
     }
 
-    // The figure above starts when the handler ran, not when the finger moved. A producer that
-    // states the hardware moment would let the time before the handler be included; this one does
-    // not, so saying so is the difference between a lower bound and a wrong number.
-    let _ = writeln!(
-        out,
-        "\nEach figure is measured from the handler starting, so any delay before the handler ran \
-         is not included and every figure is a lower bound.\n",
-    );
+    // Whether a figure is the whole wait depends on the producer, so it is stated per recording
+    // rather than assumed. Claiming a lower bound when the producer measured from the hardware
+    // would understate a real problem; claiming exactness when it did not would invent one.
+    let caveat = if analysis.responses.iter().all(critpath_graph::Response::exact) {
+        "Each figure is the producer's own measurement, from the input reaching the machine to \
+         the frame that answered it."
+    } else {
+        "Each figure not marked exact is measured from the handler starting, so any delay before \
+         the handler ran is not included and that figure is a lower bound."
+    };
+    let _ = writeln!(out, "\n{caveat}\n");
     out
 }
 

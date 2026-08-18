@@ -6,7 +6,11 @@
 //! Its flow events are literal dependency edges, so the graph arrives already drawn by whoever
 //! produced the trace rather than guessed at here.
 
-use critpath_core::{Activity, ActivityId, Arrival, Coverage, EdgeKind, Graph, Micros, Track};
+use std::collections::HashMap;
+
+use critpath_core::{
+    Activity, ActivityId, Arrival, Coverage, EdgeKind, Graph, Micros, Phases, Track,
+};
 use fitkit_core::Confidence;
 use serde_json::Value;
 
@@ -16,7 +20,7 @@ mod read;
 mod vocabulary;
 
 pub use read::ParseError;
-pub use vocabulary::Vocabulary;
+pub use vocabulary::{Stated, Vocabulary};
 
 /// Phases that carry an interval on a call stack and are therefore read.
 const INTERVAL: [&str; 3] = ["X", "B", "E"];
@@ -157,7 +161,9 @@ pub fn read_as(bytes: &[u8], vocabulary: Vocabulary) -> Result<Graph, ParseError
     origins.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     graph.recording.origins = origins;
     graph.presentations.sort_unstable();
+    fuse_arrivals(&mut graph);
     bind_arrivals(&mut graph, vocabulary);
+    state_presentations(&mut graph);
     Ok(graph)
 }
 
@@ -180,9 +186,8 @@ fn census(
         }
     }
     if vocabulary.is_stimulus(name) {
-        let kind = event
-            .get("args")
-            .and_then(|args| args.get("data"))
+        let data = event.get("args").and_then(|args| args.get("data"));
+        let kind = data
             .and_then(|data| data.get(vocabulary.stimulus_kind))
             .and_then(Value::as_str)
             .unwrap_or_default();
@@ -193,13 +198,133 @@ fn census(
         if vocabulary.is_from_a_person(kind) {
             graph.recording.stimuli += 1;
             if let Some(at) = read::at(event) {
-                graph.arrivals.push(Arrival { at, kind: kind.to_owned(), activity: None });
+                let (interaction, phases) = match (vocabulary.stated, data) {
+                    (Some(stated), Some(data)) => (identity(&stated, data), phases(&stated, data)),
+                    _ => (None, None),
+                };
+                graph.arrivals.push(Arrival {
+                    at,
+                    kind: kind.to_owned(),
+                    activity: None,
+                    interaction,
+                    phases,
+                });
             }
         }
     }
     if let Some(args) = event.get("args") {
         note_origins(args, origins, 0);
     }
+}
+
+/// The producer's own identity for the interaction an arrival belongs to.
+fn identity(stated: &Stated, data: &Value) -> Option<i64> {
+    data.get(stated.identity).and_then(Value::as_i64)
+}
+
+/// The split the producer stated, in microseconds.
+///
+/// Read as differences within one event, never as absolute moments, because the producer states
+/// these in its own page clock while the trace is stamped in the machine's. A difference is the
+/// same number in both clocks; an absolute value is not, and mixing them is how a tool reports a
+/// wait that never happened.
+fn phases(stated: &Stated, data: &Value) -> Option<Phases> {
+    let field = |name: &str| data.get(name).and_then(Value::as_f64);
+    let (began, start, end, latency) = (
+        field(stated.began)?,
+        field(stated.processing_start)?,
+        field(stated.processing_end)?,
+        field(stated.latency)?,
+    );
+    // Rounded and clamped before the cast, so the conversion is exact for every value a producer
+    // can state and a nonsense one saturates instead of wrapping into a plausible-looking figure.
+    #[allow(clippy::cast_possible_truncation)]
+    let micros = |ms: f64| {
+        let scaled = (ms * 1000.0).round();
+        if scaled.is_finite() {
+            scaled.clamp(Micros::MIN as f64, Micros::MAX as f64) as Micros
+        } else {
+            0
+        }
+    };
+    Some(Phases {
+        input_delay: micros(start - began).max(0),
+        processing: micros(end - start).max(0),
+        presentation_delay: micros(latency - (end - began)).max(0),
+        latency: micros(latency).max(0),
+    })
+}
+
+/// Collapse the several events of one physical interaction into the one the producer measured.
+///
+/// One press of one finger emits a pointerdown, a pointerup and a click, and a producer that
+/// groups them says which group each belongs to. Reporting them separately would say a person
+/// interacted three times and would report one wait three times over, which is not a rounding
+/// error but a wrong answer to "how many things were slow".
+///
+/// Two rules, both stated by the producer rather than chosen here. An arrival the producer marks
+/// as belonging to no interaction is not one. Among a group, the member stating the greatest
+/// latency is the one kept, because that is the latency the person waited and the shorter members
+/// are the same wait measured from a later moment.
+///
+/// Applied only when this recording actually holds stated groupings. A producer that states none
+/// is left exactly as it was, so a recording read through a vocabulary without them is unaffected.
+fn fuse_arrivals(graph: &mut critpath_core::Graph) {
+    if !graph.arrivals.iter().any(|arrival| arrival.interaction.is_some()) {
+        return;
+    }
+    let mut best: HashMap<i64, usize> = HashMap::new();
+    let mut keep = vec![false; graph.arrivals.len()];
+    for (index, arrival) in graph.arrivals.iter().enumerate() {
+        // Unstated arrivals are the same gestures seen through the producer's other spelling for
+        // them. Keeping them beside the stated ones would double every interaction.
+        let Some(identity) = arrival.interaction else { continue };
+        if identity == Stated::NO_INTERACTION {
+            continue;
+        }
+        let latency = arrival.phases.map_or(0, |phases| phases.latency);
+        match best.get(&identity) {
+            Some(&seen)
+                if graph.arrivals[seen].phases.map_or(0, |phases| phases.latency) >= latency => {}
+            _ => {
+                best.insert(identity, index);
+            }
+        }
+    }
+    for &index in best.values() {
+        keep[index] = true;
+    }
+    graph.recording.stated_interactions = best.len();
+    let mut index = 0;
+    graph.arrivals.retain(|_| {
+        index += 1;
+        keep[index - 1]
+    });
+    graph.arrivals.sort_by_key(|arrival| arrival.at);
+}
+
+/// Take the end of every stated interaction as a moment something reached the screen.
+///
+/// It is one, and stated more directly than any separately spelled presentation event: the
+/// producer measured this interaction to the frame that answered it and wrote that frame's moment
+/// down. A real capture held two frame events in twenty-nine megabytes, which timed every
+/// interaction to a frame drawn long afterwards for an unrelated reason and overstated one wait by
+/// half again. Reading the ends the producer already stated costs nothing and is exact.
+fn state_presentations(graph: &mut critpath_core::Graph) {
+    let ends: Vec<Micros> = graph
+        .arrivals
+        .iter()
+        .filter_map(|arrival| {
+            let activity = arrival.activity?;
+            Some(graph.activities[activity].start + arrival.phases?.latency)
+        })
+        .collect();
+    if ends.is_empty() {
+        return;
+    }
+    graph.presentations.extend(ends);
+    graph.presentations.sort_unstable();
+    graph.presentations.dedup();
 }
 
 /// Bind every arrival to the interval the producer recorded for handling it.
@@ -224,6 +349,17 @@ fn bind_arrivals(graph: &mut critpath_core::Graph, vocabulary: Vocabulary) {
         .map(|(id, activity)| (activity.start, id))
         .collect();
     handlers.sort_unstable();
+    // Every stimulus interval, not merely the ones an arrival bound to. One gesture is recorded
+    // several times over, and the siblings of the bound one are envelopes just as much as it is.
+    graph.envelopes = graph
+        .activities
+        .iter()
+        .enumerate()
+        .filter(|(_, activity)| {
+            vocabulary.is_stimulus(&activity.name) || vocabulary.is_envelope(&activity.name)
+        })
+        .map(|(id, _)| id)
+        .collect();
     for arrival in &mut graph.arrivals {
         // The earliest handler stated to begin exactly when the arrival did. Equality only: a
         // nearby interval is not the same record, and pairing by proximity would invent a link the
