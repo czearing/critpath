@@ -15,6 +15,7 @@ categories = ["development-tools::profiling"]
 critpath-core.workspace = true
 critpath-graph.workspace = true
 critpath-laws.workspace = true
+critpath-repo.workspace = true
 critpath-source.workspace = true
 critpath-trace.workspace = true
 fitkit-core.workspace = true

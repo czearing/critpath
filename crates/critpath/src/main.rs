@@ -30,6 +30,74 @@ fn usage() {
     eprintln!("                   resolved, because they would resolve to the wrong offsets.");
     eprintln!("  --budget N       how many changes you can afford. Required to get a repair plan,");
     eprintln!("                   because how many is affordable is not a fact about the trace.");
+    eprintln!();
+    eprintln!("critpath repo <root> [--entry NAME] [--budget N]");
+    eprintln!();
+    eprintln!(
+        "                   Reads the repository itself. Nothing is built, installed or run."
+    );
+    eprintln!("                   Reports what each dependency holds in place rather than what it");
+    eprintln!("                   weighs, which is the number a removal actually delivers, and");
+    eprintln!("                   which style rules nothing can reach. A stylesheet whose classes");
+    eprintln!("                   are named dynamically is counted as undecidable, never deleted.");
+    eprintln!("  --entry NAME     which component is the thing being shipped. Refused when the");
+    eprintln!("                   repository holds more than one and none was named.");
+}
+
+/// `critpath repo <root> [--entry NAME] [--budget N]`
+fn repo(mut args: impl Iterator<Item = String>) -> ExitCode {
+    let Some(root) = args.next() else {
+        usage();
+        return ExitCode::from(2);
+    };
+    let mut entry = None;
+    let mut budget = None;
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--entry" => {
+                let Some(name) = args.next() else {
+                    eprintln!("--entry needs the name of a component");
+                    return ExitCode::from(2);
+                };
+                entry = Some(name);
+            }
+            "--budget" => {
+                let Some(n) = args.next().and_then(|n| n.parse::<usize>().ok()) else {
+                    eprintln!("--budget needs a whole number");
+                    return ExitCode::from(2);
+                };
+                budget = Some(n);
+            }
+            other => {
+                eprintln!("unknown argument: {other}");
+                usage();
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let read = critpath::read_repo(std::path::Path::new(&root), entry.as_deref());
+    let out = match read {
+        Ok(repository) => {
+            let held = repository.hold();
+            let (unused, undecidable) = critpath::unused_styles(&repository);
+            critpath::report_repo(
+                &repository,
+                &held,
+                budget,
+                (unused.as_slice(), undecidable.as_slice()),
+            )
+        }
+        // A refusal is an answer. Nothing was concluded, and why is the useful part.
+        Err(refusal) => format!("No verdict on {root}: {refusal}\n"),
+    };
+    if let Err(error) = io::stdout().write_all(out.as_bytes()) {
+        if error.kind() != io::ErrorKind::BrokenPipe {
+            eprintln!("cannot write the report: {error}");
+            return ExitCode::from(2);
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 fn main() -> ExitCode {
@@ -38,6 +106,9 @@ fn main() -> ExitCode {
         usage();
         return ExitCode::from(2);
     };
+    if path == "repo" {
+        return repo(args);
+    }
 
     let mut budget = None;
     let mut maps = None;

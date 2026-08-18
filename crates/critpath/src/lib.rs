@@ -16,14 +16,19 @@ use critpath_graph::{critical_path, responses, CriticalPath, Response};
 use critpath_laws::{choose, findings, Finding, Observation, Proof, Repair};
 use fitkit_core::{Answer, Refusal};
 
+mod holding;
 mod isolate;
 mod render;
 
 pub use critpath_core::{Arrival, Asked, EdgeKind, Question, Recording};
 pub use critpath_graph::Response as Answered;
 pub use critpath_laws::{Finding as Proven, Silence};
+pub use critpath_repo::{
+    read as read_repo, unused_styles, Held, Plan, Refusal as RepoRefusal, Repo, Undecidable, Unused,
+};
 pub use critpath_source::{Fixability, Located, Resolution, Resolver};
 pub use critpath_trace::{read_as, ParseError, Vocabulary};
+pub use holding::report_repo;
 pub use isolate::{Dependency, Isolation, Place};
 pub use render::{report, report_isolated};
 

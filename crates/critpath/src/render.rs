@@ -4,6 +4,7 @@ use core::fmt::Write as _;
 
 use critpath_laws::{Finding, Repair};
 
+use crate::isolate::Place;
 use crate::Analysis;
 use crate::{Fixability, Isolation};
 
@@ -120,7 +121,15 @@ fn located(isolation: &Isolation) -> String {
         census.proved,
         census.unproved,
     );
-    for place in isolation.places.iter().take(10) {
+    // The list is cut at ten. Ranked by cost alone, a development build's own frames can fill all
+    // ten and hide every line the repository can actually change -- which is the only kind of line
+    // that can become a change. Code we own is therefore ordered first, and cost decides within
+    // each group; nothing is dropped that was not dropped before.
+    let mut places: Vec<&Place> = isolation.places.iter().collect();
+    places.sort_by_key(|place| {
+        (place.at.fixability() != Fixability::Repository, std::cmp::Reverse(place.cost))
+    });
+    for place in places.iter().take(10) {
         let _ = writeln!(
             out,
             "  {} over {} call(s)  {}{}",
