@@ -4,6 +4,8 @@
 //! reports the decoy is wrong in the way that matters most here, because a tool that cries wolf on
 //! work nobody needs to fix is worse than no tool at all.
 
+use std::fmt::Write as _;
+
 use critpath::{analyse, analyse_for, Asked, EdgeKind, Proven, Vocabulary};
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -597,5 +599,125 @@ fn a_producer_whose_spelling_is_unknown_answers_for_the_finish_and_refuses_the_r
     assert!(
         analyse_for(&trace, &Asked::response(), Vocabulary::UNKNOWN).is_err(),
         "an unknown spelling must refuse, never guess",
+    );
+}
+
+#[test]
+fn each_interaction_is_timed_from_its_handler_to_the_next_frame() {
+    let analysis = analyse_for(&fixture("menu.json"), &Asked::response(), Vocabulary::CHROME)
+        .expect("someone clicked and frames were presented");
+    assert_eq!(analysis.graph.arrivals.len(), 3, "two clicks with handlers, one without");
+    assert_eq!(analysis.responses.len(), 2, "only the two with handlers can be timed");
+
+    // Slowest first, because the question is whether anything was slow.
+    let slow = &analysis.responses[0];
+    assert_eq!(slow.elapsed(), 1500, "2000us handler start to the 3500us frame");
+    assert_eq!(slow.working, 900, "200us dispatch plus the 700us task it led to");
+    assert_eq!(slow.waiting, 600, "100us between them, 500us waiting for the screen");
+    assert_eq!(slow.working + slow.waiting, slow.elapsed(), "the split accounts for all of it");
+
+    let fast = &analysis.responses[1];
+    assert_eq!(fast.elapsed(), 100, "the decoy interaction really was fast");
+}
+
+#[test]
+fn an_interaction_chain_never_runs_past_the_frame_that_answered_it() {
+    // The negative control for the confinement. `after.js` runs at 3600us, AFTER the 3500us frame
+    // that already answered the click. Extending the chain into it would attribute work to a wait
+    // that was over, which is the failure mode that makes a fast interaction look slow -- and it
+    // is what happens the moment successors stop being confined to a shared deadline.
+    let analysis = analyse_for(&fixture("menu.json"), &Asked::response(), Vocabulary::CHROME)
+        .expect("someone clicked");
+    let slow = &analysis.responses[0];
+    for &id in &slow.chain {
+        let activity = &analysis.graph.activities[id];
+        assert!(
+            activity.end <= slow.presented,
+            "{} ends at {} but the screen had answered at {}",
+            activity.name,
+            activity.end,
+            slow.presented,
+        );
+    }
+    let names: Vec<&str> =
+        slow.chain.iter().map(|&id| analysis.graph.activities[id].name.as_str()).collect();
+    assert_eq!(names, ["EventDispatch", "RunTask"], "the handler and the task it led to, no more");
+}
+
+#[test]
+fn an_interaction_whose_handling_was_never_recorded_is_named_rather_than_dropped() {
+    // Three people-clicks arrived; one has no interval. Reporting two and staying silent about the
+    // third would let an unmeasured interaction read as a fast one.
+    let analysis = analyse_for(&fixture("menu.json"), &Asked::response(), Vocabulary::CHROME)
+        .expect("someone clicked");
+    assert!(
+        analysis.graph.arrivals.iter().any(|arrival| arrival.activity.is_none()),
+        "the instant dispatch has no interval",
+    );
+    let report = critpath::report(&analysis, None);
+    assert!(
+        report.contains("3 interaction(s) arrived") && report.contains("2 could be timed"),
+        "the report must say how many it could not time: {report}",
+    );
+    assert!(report.contains("not timed"), "and must name the one it could not: {report}");
+}
+
+#[test]
+fn a_page_loading_is_never_mistaken_for_a_person_interacting() {
+    // The decoy carried by this fixture: a `load` dispatch spelled exactly like the clicks, with
+    // an interval of its own. It must never appear as an interaction.
+    let analysis = analyse_for(&fixture("menu.json"), &Asked::response(), Vocabulary::CHROME)
+        .expect("someone clicked");
+    assert!(
+        analysis.graph.arrivals.iter().all(|arrival| arrival.kind == "click"),
+        "only clicks came from a person",
+    );
+    assert!(
+        analysis.responses.iter().all(|response| response.began != 1000),
+        "the load dispatch at 1000us is not an interaction",
+    );
+}
+
+#[test]
+fn asking_why_it_finished_reports_no_interactions_at_all() {
+    // Cost is not the reason. A recording admitted to answer for the finish was never admitted to
+    // answer for responsiveness, and answering anyway is how the two get confused.
+    let analysis = analyse_for(&fixture("menu.json"), &Asked::finish(), Vocabulary::CHROME)
+        .expect("the finish needs no interaction");
+    assert!(analysis.responses.is_empty(), "no interaction report was asked for");
+}
+
+#[test]
+fn a_recording_whose_chain_is_most_of_it_is_answered_in_seconds_not_minutes() {
+    // The control for a defect that no fixture could show, because it is invisible until the
+    // chain is long. Every rule that asked a question once per step and answered it by looking at
+    // every activity cost the product of the two, so a busy single thread -- the commonest shape
+    // a real recording has -- turned a one-second report into a three-minute one. Measured before
+    // the fix: 8.1s for 50,000 activities and 187.6s for 200,000. After: 21ms and 90ms.
+    //
+    // The bound is deliberately far above the measured time and far below the old one, so this
+    // fails on a return of the quadratic and cannot fail on a slow machine.
+    let mut events = String::from(
+        r#"{"traceEvents":[{"ph":"M","name":"thread_name","pid":1,"tid":1,"args":{"name":"main"}}"#,
+    );
+    let steps: usize = 50_000;
+    for step in 0..steps {
+        let ts = 1000 + step * 100;
+        let _ = write!(
+            events,
+            r#",{{"ph":"X","name":"RunTask","cat":"toplevel","pid":1,"tid":1,"ts":{ts},"dur":50,"args":{{"data":{{"url":"https://app.test/{step}.js"}}}}}}"#
+        );
+    }
+    events.push_str("]}");
+
+    let began = std::time::Instant::now();
+    let analysis = analyse(events.as_bytes()).expect("a long serial chain is still a chain");
+    let took = began.elapsed();
+
+    assert_eq!(analysis.path.steps.len(), steps, "the whole thread is the chain");
+    assert!(
+        took < std::time::Duration::from_secs(5),
+        "a {steps}-step chain took {took:?}; before the fix this shape took 8.1s and grew with \
+         the square of the chain",
     );
 }

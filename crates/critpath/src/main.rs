@@ -1,5 +1,7 @@
 //! `critpath <trace.json> [--for finish|response] [--origin URL] [--producer chrome] [--budget N]`
 
+use std::fmt::Write as _;
+use std::io::{self, Write as _};
 use std::process::ExitCode;
 
 use critpath::{Asked, Question, Vocabulary};
@@ -82,25 +84,36 @@ fn main() -> ExitCode {
         }
     };
 
+    let mut out = String::new();
     match critpath::analyse_for(&bytes, &asked, vocabulary) {
         Ok(analysis) => {
             let repair = budget.and_then(|budget| analysis.repair(budget).ok());
-            print!("{}", critpath::report(&analysis, repair.as_ref()));
+            out.push_str(&critpath::report(&analysis, repair.as_ref()));
         }
         Err(refusal) => {
             // A refusal is an answer, so it goes to stdout and exits clean. Nothing was concluded,
             // and the reason it was not concluded is the useful part.
-            println!("No verdict on {}: {refusal}", asked.question.word());
+            let _ = writeln!(out, "No verdict on {}: {refusal}", asked.question.word());
             // The census prints beside the refusal rather than inside it, so an operator who
             // declared an origin the recording never held can see what it actually held.
             if let Ok(graph) = critpath::read_as(&bytes, vocabulary) {
-                println!(
+                let _ = writeln!(
+                    out,
                     "The recording holds {} moment(s) arriving from a person and {} \
                      presentation(s).",
                     graph.recording.stimuli, graph.recording.presentations
                 );
-                println!("Origins present: {}", graph.recording.suggestions());
+                let _ = writeln!(out, "Origins present: {}", graph.recording.suggestions());
             }
+        }
+    }
+    // Written once, and a reader that stopped reading is not an error. `critpath trace.json | head`
+    // closes the pipe as soon as it has its lines, and a report that panics rather than stopping is
+    // a tool that cannot be used in the one place a long report most needs trimming.
+    if let Err(error) = io::stdout().write_all(out.as_bytes()) {
+        if error.kind() != io::ErrorKind::BrokenPipe {
+            eprintln!("cannot write the report: {error}");
+            return ExitCode::from(2);
         }
     }
     ExitCode::SUCCESS

@@ -1,0 +1,28 @@
+{
+  "traceEvents": [
+    { "ph": "M", "name": "thread_name", "pid": 1, "tid": 1, "args": { "name": "main" } },
+
+    { "ph": "X", "name": "EventDispatch", "cat": "devtools.timeline", "pid": 1, "tid": 1, "ts": 1000, "dur": 100,
+      "args": { "data": { "type": "load" } } },
+
+    { "ph": "X", "name": "EventDispatch", "cat": "devtools.timeline", "pid": 1, "tid": 1, "ts": 2000, "dur": 200,
+      "args": { "data": { "type": "click" } } },
+    { "ph": "X", "name": "RunTask", "cat": "toplevel", "pid": 1, "tid": 1, "ts": 2300, "dur": 700,
+      "args": { "data": { "url": "https://app.test/menu.js" } } },
+
+    { "ph": "R", "name": "FramePresented", "cat": "cc,benchmark", "pid": 1, "tid": 1, "ts": 3500,
+      "args": { "environment": "browser" } },
+
+    { "ph": "X", "name": "RunTask", "cat": "toplevel", "pid": 1, "tid": 1, "ts": 3600, "dur": 400,
+      "args": { "data": { "url": "https://app.test/after.js" } } },
+
+    { "ph": "X", "name": "EventDispatch", "cat": "devtools.timeline", "pid": 1, "tid": 1, "ts": 5000, "dur": 50,
+      "args": { "data": { "type": "click" } } },
+
+    { "ph": "R", "name": "FramePresented", "cat": "cc,benchmark", "pid": 1, "tid": 1, "ts": 5100,
+      "args": { "environment": "browser" } },
+
+    { "ph": "I", "name": "EventDispatch", "cat": "devtools.timeline", "s": "t", "pid": 1, "tid": 1, "ts": 8000,
+      "args": { "data": { "type": "click" } } }
+  ]
+}

@@ -12,13 +12,14 @@
 //! [`Refusal`]: fitkit_core::Refusal
 
 use critpath_core::{Coverage, Graph};
-use critpath_graph::{critical_path, CriticalPath};
+use critpath_graph::{critical_path, responses, CriticalPath, Response};
 use critpath_laws::{choose, findings, Finding, Observation, Proof, Repair};
 use fitkit_core::{Answer, Refusal};
 
 mod render;
 
-pub use critpath_core::{Asked, EdgeKind, Question, Recording};
+pub use critpath_core::{Arrival, Asked, EdgeKind, Question, Recording};
+pub use critpath_graph::Response as Answered;
 pub use critpath_laws::{Finding as Proven, Silence};
 pub use critpath_trace::{read_as, ParseError, Vocabulary};
 pub use render::report;
@@ -32,6 +33,12 @@ pub struct Analysis {
     pub proof: Proof,
     /// What was left unread, carried rather than dropped.
     pub coverage: Coverage,
+    /// One entry per interaction the recording holds, slowest first.
+    ///
+    /// Empty for a question that did not ask about interaction, which is why the question is
+    /// checked before this is computed: a report about responsiveness is only ever produced for a
+    /// recording that was admitted to answer for responsiveness.
+    pub responses: Vec<Response>,
     /// The trace the conclusions refer to.
     pub graph: Graph,
 }
@@ -88,6 +95,16 @@ pub fn analyse_for(bytes: &[u8], asked: &Asked, vocabulary: Vocabulary) -> Answe
     asked.admits(&graph.recording)?;
     graph.coverage.contradicted += critpath_graph::contradictions(&graph);
     let path = critical_path(&graph)?;
+    // Only for the question that asked. The sweep is one pass over the order the chain already
+    // walks, so it is cheap, but "cheap" is not a reason to compute an answer nobody asked for --
+    // and a recording admitted to answer for the finish was never admitted to answer for this.
+    let answered = if asked.question == Question::Response {
+        critpath_graph::topological(&graph)
+            .map(|order| responses(&graph, &order))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let proof = findings(Observation { graph: &graph, path: &path });
-    Ok(Analysis { coverage: graph.coverage, proof, path, graph })
+    Ok(Analysis { coverage: graph.coverage, proof, path, responses: answered, graph })
 }

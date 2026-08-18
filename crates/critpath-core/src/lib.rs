@@ -9,7 +9,7 @@ use fitkit_core::Confidence;
 
 mod ask;
 
-pub use ask::{Asked, Question, Recording};
+pub use ask::{Arrival, Asked, Question, Recording};
 
 /// Microseconds since the trace clock started. The unit the source reports in.
 pub type Micros = i64;
@@ -208,6 +208,14 @@ pub struct Graph {
     pub coverage: Coverage,
     /// What the recording was found to contain, for deciding which questions it can answer.
     pub recording: Recording,
+    /// Every moment something arrived from a person, in the order the producer stated them.
+    pub arrivals: Vec<Arrival>,
+    /// Every moment something reached the screen, ascending.
+    ///
+    /// Sorted because the only question ever asked of it is "which was the first one after this",
+    /// and answering that by scanning would make the cost of reporting one interaction depend on
+    /// how many frames the whole recording drew.
+    pub presentations: Vec<Micros>,
 }
 
 impl Graph {

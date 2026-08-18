@@ -21,10 +21,97 @@ fn margin_micros(value: f64) -> i64 {
     value.clamp(0.0, i64::MAX as f64) as i64
 }
 
+/// Every interaction the recording holds, slowest first, and every one it could not time.
+///
+/// Empty for a question that did not ask about interaction. When it does ask, the interactions
+/// that could NOT be timed are printed too: an arrival the producer stated but recorded no
+/// interval for, or one after which nothing was ever drawn, is an interaction whose cost is
+/// unmeasured, and leaving it out of the list would let it read as a fast one.
+fn interactions(analysis: &Analysis) -> String {
+    let arrivals = &analysis.graph.arrivals;
+    if arrivals.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    let timed = analysis.responses.len();
+    let _ = writeln!(
+        out,
+        "{} interaction(s) arrived from a person; {timed} could be timed to the screen.",
+        arrivals.len(),
+    );
+
+    for response in &analysis.responses {
+        let kind = &arrivals[response.arrival].kind;
+        let _ = writeln!(
+            out,
+            "\n  {} from {} to the screen: {} working, {} waiting, over {} activit{}.",
+            micros(response.elapsed()),
+            kind,
+            micros(response.working),
+            micros(response.waiting),
+            response.chain.len(),
+            if response.chain.len() == 1 { "y" } else { "ies" },
+        );
+        let mut reached = response.began;
+        for &id in &response.chain {
+            let activity = &analysis.graph.activities[id];
+            let gap = (activity.start - reached).max(0);
+            if gap > 0 {
+                let _ = writeln!(out, "    ({} waiting)", micros(gap));
+            }
+            let _ = writeln!(
+                out,
+                "    {} {}{}",
+                micros(activity.duration()),
+                activity.name,
+                activity.subject.as_deref().map_or(String::new(), |s| format!(" [{s}]")),
+            );
+            reached = reached.max(activity.end);
+        }
+        let trailing = (response.presented - reached).max(0);
+        if trailing > 0 {
+            let _ = writeln!(out, "    ({} waiting for the screen)", micros(trailing));
+        }
+    }
+
+    // Named, not dropped. The remedy for these is a different recording, and an operator who
+    // cannot see them will read the timed ones as the whole story. Membership is marked once
+    // rather than searched per arrival, so a recording of a person clicking for a minute does not
+    // cost the square of what it holds.
+    let mut timed_at: Vec<usize> = analysis.responses.iter().map(|r| r.activity).collect();
+    timed_at.sort_unstable();
+    for arrival in arrivals {
+        let reason = match arrival.activity {
+            None => "the producer stated it but recorded no interval for handling it",
+            Some(id) if timed_at.binary_search(&id).is_err() => {
+                "nothing was ever drawn after it, so what the person waited for was never recorded"
+            }
+            Some(_) => continue,
+        };
+        let _ = writeln!(
+            out,
+            "\n  {} at {}: not timed, because {reason}.",
+            arrival.kind,
+            micros(arrival.at)
+        );
+    }
+
+    // The figure above starts when the handler ran, not when the finger moved. A producer that
+    // states the hardware moment would let the time before the handler be included; this one does
+    // not, so saying so is the difference between a lower bound and a wrong number.
+    let _ = writeln!(
+        out,
+        "\nEach figure is measured from the handler starting, so any delay before the handler ran \
+         is not included and every figure is a lower bound.\n",
+    );
+    out
+}
+
 /// A plain-English report, including what could not be concluded.
 pub fn report(analysis: &Analysis, repair: Option<&Repair>) -> String {
     let path = &analysis.path;
     let mut out = String::new();
+    out.push_str(&interactions(analysis));
     let _ = writeln!(
         out,
         "The finish was decided by a chain of {} activities lasting {}: {} working, {} waiting.",

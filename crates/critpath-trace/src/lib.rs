@@ -6,7 +6,7 @@
 //! Its flow events are literal dependency edges, so the graph arrives already drawn by whoever
 //! produced the trace rather than guessed at here.
 
-use critpath_core::{Activity, ActivityId, Coverage, EdgeKind, Graph, Micros, Track};
+use critpath_core::{Activity, ActivityId, Arrival, Coverage, EdgeKind, Graph, Micros, Track};
 use fitkit_core::Confidence;
 use serde_json::Value;
 
@@ -99,7 +99,7 @@ pub fn read_as(bytes: &[u8], vocabulary: Vocabulary) -> Result<Graph, ParseError
         // recording contains costs nothing and can never be skipped for speed. It is taken BEFORE
         // the ignored-phase check on purpose: a presentation is a mark, marks carry no work, and
         // so the only place that evidence exists is in an event the graph itself discards.
-        census(event, vocabulary, &mut graph.recording, &mut origins);
+        census(event, vocabulary, &mut graph, &mut origins);
         if IGNORED.contains(&phase) {
             continue;
         }
@@ -156,6 +156,8 @@ pub fn read_as(bytes: &[u8], vocabulary: Vocabulary) -> Result<Graph, ParseError
     graph.edges.dedup_by_key(|e| (e.from, e.to));
     origins.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     graph.recording.origins = origins;
+    graph.presentations.sort_unstable();
+    bind_arrivals(&mut graph, vocabulary);
     Ok(graph)
 }
 
@@ -167,12 +169,15 @@ pub fn read_as(bytes: &[u8], vocabulary: Vocabulary) -> Result<Graph, ParseError
 fn census(
     event: &Value,
     vocabulary: Vocabulary,
-    recording: &mut critpath_core::Recording,
+    graph: &mut critpath_core::Graph,
     origins: &mut Vec<(String, usize)>,
 ) {
     let name = event.get("name").and_then(Value::as_str).unwrap_or_default();
     if vocabulary.is_presentation(name) {
-        recording.presentations += 1;
+        graph.recording.presentations += 1;
+        if let Some(at) = read::at(event) {
+            graph.presentations.push(at);
+        }
     }
     if vocabulary.is_stimulus(name) {
         let kind = event
@@ -186,11 +191,46 @@ fn census(
         // dispatches rather than kinds is what would let an idle recording claim it held
         // interactions.
         if vocabulary.is_from_a_person(kind) {
-            recording.stimuli += 1;
+            graph.recording.stimuli += 1;
+            if let Some(at) = read::at(event) {
+                graph.arrivals.push(Arrival { at, kind: kind.to_owned(), activity: None });
+            }
         }
     }
     if let Some(args) = event.get("args") {
         note_origins(args, origins, 0);
+    }
+}
+
+/// Bind every arrival to the interval the producer recorded for handling it.
+///
+/// The census sees an arrival as an event; the graph holds it as an interval; nothing in the
+/// format links the two, because they are the same record read twice. The producer's own start
+/// timestamp is that link, and it is stated rather than inferred, so no confidence is spent
+/// recovering it.
+///
+/// Indexed and searched rather than scanned per arrival. A recording of a person clicking around
+/// for a minute holds hundreds of arrivals against hundreds of thousands of intervals, and the
+/// scan is the difference between binding them and appearing to hang.
+fn bind_arrivals(graph: &mut critpath_core::Graph, vocabulary: Vocabulary) {
+    if graph.arrivals.is_empty() {
+        return;
+    }
+    let mut handlers: Vec<(Micros, usize)> = graph
+        .activities
+        .iter()
+        .enumerate()
+        .filter(|(_, activity)| vocabulary.is_stimulus(&activity.name))
+        .map(|(id, activity)| (activity.start, id))
+        .collect();
+    handlers.sort_unstable();
+    for arrival in &mut graph.arrivals {
+        // The earliest handler stated to begin exactly when the arrival did. Equality only: a
+        // nearby interval is not the same record, and pairing by proximity would invent a link the
+        // producer never wrote.
+        let found = handlers.partition_point(|&(start, _)| start < arrival.at);
+        arrival.activity =
+            handlers.get(found).filter(|&&(start, _)| start == arrival.at).map(|&(_, id)| id);
     }
 }
 

@@ -4,8 +4,9 @@
 //! gate first. A rule can therefore never answer about a trace it was not entitled to read.
 
 use core::marker::PhantomData;
+use std::collections::HashMap;
 
-use critpath_core::Micros;
+use critpath_core::{Graph, Micros};
 use fitkit_core::{Answer, Refusal};
 use fitkit_ledger::{Citation, Law};
 
@@ -13,6 +14,52 @@ use crate::{Finding, Observation, CRITICAL_PATH, FORMAT};
 
 /// Category, name, and what the source said the work was done to.
 type Subject<'a> = (&'a str, &'a str, &'a str);
+
+/// Whether the machine was busy at any point in a window, answered without rescanning the trace.
+///
+/// The question "was anything at all running between these two moments" is asked once per wait on
+/// the chain, and answering it by looking at every activity makes the cost of a report the product
+/// of the chain's length and the trace's size. That is invisible on a trace whose chain is a
+/// handful of steps and fatal on one whose chain is most of the recording -- and a busy single
+/// thread produces exactly the second kind, where it turns a one-second report into a three-minute
+/// one.
+///
+/// Spans sorted by start, carrying the highest end seen so far. Anything that started before the
+/// window closed is a candidate, and the greatest end among those candidates decides the answer,
+/// so one binary search replaces the scan. Same predicate, same answer, in logarithmic time.
+struct Busy {
+    starts: Vec<Micros>,
+    highest_end: Vec<Micros>,
+}
+
+impl Busy {
+    fn of(graph: &Graph) -> Self {
+        // Inferred extents are excluded here exactly as they were when this was a scan: a
+        // correlation this reader invented is not the machine doing anything.
+        let mut spans: Vec<(Micros, Micros)> = graph
+            .activities
+            .iter()
+            .filter(|activity| !activity.inferred && activity.end > activity.start)
+            .map(|activity| (activity.start, activity.end))
+            .collect();
+        spans.sort_unstable();
+        let mut starts = Vec::with_capacity(spans.len());
+        let mut highest_end = Vec::with_capacity(spans.len());
+        let mut highest = Micros::MIN;
+        for (start, end) in spans {
+            highest = highest.max(end);
+            starts.push(start);
+            highest_end.push(highest);
+        }
+        Self { starts, highest_end }
+    }
+
+    /// Whether anything was running at any point between `from` and `to`.
+    fn during(&self, from: Micros, to: Micros) -> bool {
+        let candidates = self.starts.partition_point(|&start| start < to);
+        candidates > 0 && self.highest_end[candidates - 1] > from
+    }
+}
 
 /// Refuse a rule whose claim the holes in this trace could overturn.
 ///
@@ -92,6 +139,10 @@ impl<'a> Law for RepeatedWork<'a> {
         let self_time = graph.self_times();
         let on_chain = graph.with_nested(&observation.path.activities().collect::<Vec<_>>());
         let mut groups: Vec<(Subject<'_>, Vec<usize>)> = Vec::new();
+        // Kept in first-appearance order so the report is stable, but found by key rather than by
+        // scanning what has been found so far. A chain carrying many distinct subjects is the case
+        // where the scan costs the square of the chain.
+        let mut seen: HashMap<Subject<'_>, usize> = HashMap::new();
         for id in on_chain {
             if self_time[id] == 0 {
                 continue;
@@ -99,9 +150,10 @@ impl<'a> Law for RepeatedWork<'a> {
             let Some(key) = graph.activities[id].identity() else {
                 continue;
             };
-            if let Some(group) = groups.iter_mut().find(|(seen, _)| *seen == key) {
-                group.1.push(id);
+            if let Some(&at) = seen.get(&key) {
+                groups[at].1.push(id);
             } else {
+                seen.insert(key, groups.len());
                 groups.push((key, vec![id]));
             }
         }
@@ -145,6 +197,7 @@ impl<'a> Law for DeadWait<'a> {
     fn derive(&self, observation: &Self::Input) -> Answer<Self::Output> {
         let graph = observation.graph;
         let mut findings = Vec::new();
+        let busy = Busy::of(graph);
         for step in &observation.path.steps {
             if step.wait_before == 0 {
                 continue;
@@ -158,8 +211,7 @@ impl<'a> Law for DeadWait<'a> {
             // correlated by this reader rather than observed, and more importantly a transfer in
             // flight is not the machine doing anything. Letting it count would let an inference
             // silence the one rule that catches an idle machine.
-            let busy = graph.activities.iter().any(|a| !a.inferred && a.overlaps(opened, starts));
-            if !busy {
+            if !busy.during(opened, starts) {
                 findings.push(Finding::DeadWait {
                     before: step.activity,
                     waited_on: step.waited_on,
@@ -270,6 +322,7 @@ impl<'a> Law for WaitedWhileInFlight<'a> {
             .filter(|&id| graph.activities[id].concurrent && graph.activities[id].is_informative())
             .collect();
         let mut covered: Vec<(usize, Micros, usize)> = Vec::new();
+        let mut at: HashMap<usize, usize> = HashMap::new();
         for step in &observation.path.steps {
             if step.wait_before == 0 {
                 continue;
@@ -293,12 +346,12 @@ impl<'a> Law for WaitedWhileInFlight<'a> {
             let Some((id, overlap, _)) = best else {
                 continue;
             };
-            match covered.iter_mut().find(|(seen, _, _)| *seen == id) {
-                Some(entry) => {
-                    entry.1 += overlap;
-                    entry.2 += 1;
-                }
-                None => covered.push((id, overlap, 1)),
+            if let Some(&entry) = at.get(&id) {
+                covered[entry].1 += overlap;
+                covered[entry].2 += 1;
+            } else {
+                at.insert(id, covered.len());
+                covered.push((id, overlap, 1));
             }
         }
         covered.sort_by_key(|&(id, overlap, _)| (core::cmp::Reverse(overlap), id));

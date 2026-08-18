@@ -148,12 +148,23 @@ pub fn reckon(graph: &Graph, order: &[ActivityId]) -> Option<Reckoning> {
 /// Derived from the backward pass rather than from finish times, because something finishing
 /// earlier does not mean it has room: it may be one step of a rival chain that has none. Only the
 /// longest path onward from it settles that, and that is what the backward pass computes.
+///
+/// Membership is marked once rather than searched per activity. Searching reads more simply and is
+/// quadratic in the length of the chain, which is invisible on a trace whose chain is a handful of
+/// steps and fatal on one whose chain is most of the recording -- and a busy single thread produces
+/// exactly the second kind.
 pub fn competitor(reckoning: &Reckoning, chain: &[ActivityId]) -> Option<Micros> {
+    let mut on_chain = vec![false; reckoning.slack.len()];
+    for &id in chain {
+        if let Some(slot) = on_chain.get_mut(id) {
+            *slot = true;
+        }
+    }
     reckoning
         .slack
         .iter()
         .enumerate()
-        .filter(|(id, _)| !chain.contains(id))
+        .filter(|(id, _)| !on_chain[*id])
         .filter_map(|(_, slack)| slack.map(|slack| slack.total))
         .min()
 }

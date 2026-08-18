@@ -8,6 +8,28 @@
 
 use fitkit_core::Refusal;
 
+use crate::{ActivityId, Micros};
+
+/// One moment when something arrived from a person, and the work that ran because of it.
+///
+/// Kept as evidence rather than as a count, because "was anything interacted with" and "how long
+/// did that interaction take to answer" are the same question asked at two resolutions, and only
+/// the second needs the moment itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arrival {
+    /// When the producer said it arrived.
+    pub at: Micros,
+    /// What kind of thing arrived, in the producer's own word for it.
+    pub kind: String,
+    /// The interval the producer recorded for handling it.
+    ///
+    /// [`None`] when the producer stated the arrival but recorded no interval for it, which is
+    /// evidence of an interaction whose cost was never measured. That is a different fact from an
+    /// interaction that was fast, and collapsing the two would be the same mistake as reporting an
+    /// empty finding list for a recording that holds no interactions at all.
+    pub activity: Option<ActivityId>,
+}
+
 /// What the recording is being asked about.
 ///
 /// This is not a mode that changes how anything is measured. The same graph, the same chain and

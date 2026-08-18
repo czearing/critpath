@@ -9,9 +9,11 @@ use fitkit_core::{Answer, Margin, Refusal};
 
 mod chain;
 mod order;
+mod response;
 
 pub use chain::{Reckoning, Slack};
 pub use order::{contradictions, topological};
+pub use response::{responses, Response};
 
 /// One activity on the path, and the dead time immediately before it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
