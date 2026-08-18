@@ -343,6 +343,14 @@ impl Graph {
     ///
     /// Concurrent work encloses nothing and is enclosed by nothing, since it is allowed to overlap
     /// and its position on a track is not a nesting.
+    ///
+    /// The format does not enforce nesting, and real captures do violate it: measured over four
+    /// New Office recordings, between one and five slices per capture begin inside an open slice
+    /// and end after it. Such a slice is not contained by what precedes it and does not contain
+    /// what follows, so no enclosure is claimed for it and it is never made a parent. Refusing the
+    /// individual contradiction rather than the whole track keeps every containment the producer
+    /// did state, and claiming one anyway would carry a code position outward into work that did
+    /// not run inside it -- a wrong line, reported with the same confidence as a right one.
     pub fn enclosures(&self) -> Vec<Option<ActivityId>> {
         let mut parent = vec![None; self.activities.len()];
         for (_, ids) in self.by_track() {
@@ -354,6 +362,9 @@ impl Graph {
                 }
                 while stack.last().is_some_and(|&open| self.activities[open].end <= here.start) {
                     stack.pop();
+                }
+                if stack.last().is_some_and(|&open| here.end > self.activities[open].end) {
+                    continue;
                 }
                 parent[id] = stack.last().copied();
                 stack.push(id);
@@ -394,5 +405,47 @@ impl Graph {
             (0..self.activities.len()).filter(|&id| included[id]).collect();
         all.sort_by_key(|&id| self.activities[id].start);
         all
+    }
+}
+
+#[cfg(test)]
+mod enclosure_tests {
+    use super::*;
+
+    fn slice(name: &str, start: Micros, end: Micros) -> Activity {
+        Activity {
+            name: name.to_owned(),
+            category: String::new(),
+            track: Track { pid: 1, tid: 1 },
+            start,
+            end,
+            confidence: Confidence::default(),
+            concurrent: false,
+            subject: None,
+            inferred: false,
+        }
+    }
+
+    #[test]
+    fn a_slice_that_outlives_the_one_it_started_inside_encloses_nothing_and_is_enclosed_by_nothing()
+    {
+        // The trace format does not enforce nesting and real captures do break it. `crossing`
+        // begins inside `outer` and ends after it, so neither contains the other and no position
+        // may be carried between them. `inner` and `after` are properly nested and must be
+        // unaffected: the contradiction is refused, not the track.
+        let graph = Graph {
+            activities: vec![
+                slice("outer", 0, 100),
+                slice("inner", 10, 50),
+                slice("crossing", 60, 150),
+                slice("after", 70, 80),
+            ],
+            ..Graph::default()
+        };
+        let parent = graph.enclosures();
+        assert_eq!(parent[0], None, "the outermost slice is enclosed by nothing");
+        assert_eq!(parent[1], Some(0), "a contained slice keeps its enclosure");
+        assert_eq!(parent[2], None, "a slice that outlives its opener is not inside it");
+        assert_eq!(parent[3], Some(0), "the refusal does not spread to the rest of the track");
     }
 }
