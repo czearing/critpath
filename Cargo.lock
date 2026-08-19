@@ -37,6 +37,7 @@ dependencies = [
  "critpath-core",
  "critpath-graph",
  "fitkit-core",
+ "fitkit-dp",
  "fitkit-ledger",
 ]
 
@@ -68,12 +69,20 @@ dependencies = [
 [[package]]
 name = "fitkit-core"
 version = "0.1.0"
-source = "git+https://github.com/czearing/fitkit#a1a35ef360c52b89e93408ff8c90cc162281513d"
+source = "git+https://github.com/czearing/fitkit#6f3192f962dfbdfa4cc698d0414242f99a964b32"
+
+[[package]]
+name = "fitkit-dp"
+version = "0.1.0"
+source = "git+https://github.com/czearing/fitkit#6f3192f962dfbdfa4cc698d0414242f99a964b32"
+dependencies = [
+ "fitkit-core",
+]
 
 [[package]]
 name = "fitkit-ledger"
 version = "0.1.0"
-source = "git+https://github.com/czearing/fitkit#a1a35ef360c52b89e93408ff8c90cc162281513d"
+source = "git+https://github.com/czearing/fitkit#6f3192f962dfbdfa4cc698d0414242f99a964b32"
 dependencies = [
  "fitkit-core",
 ]

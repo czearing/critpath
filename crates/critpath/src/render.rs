@@ -500,7 +500,7 @@ fn sentence(analysis: &Analysis, finding: &Finding) -> String {
             if key.1.is_empty() { "unnamed work" } else { &key.1 },
             described(&key.2),
             occurrences.len(),
-            micros(*cost),
+            micros(cost.value),
         ),
         Finding::DeadWait { before, waited_on, stated, cost } => {
             let waited_for = match (waited_on, stated) {
@@ -514,7 +514,7 @@ fn sentence(analysis: &Analysis, finding: &Finding) -> String {
             format!(
                 "Nothing ran anywhere for {} before {} — {}. That is a dependency issued later \
                  than it had to be, not slow code.",
-                micros(*cost),
+                micros(cost.value),
                 analysis.graph.activities[*before].name,
                 waited_for,
             )
@@ -564,6 +564,27 @@ fn plan(analysis: &Analysis, repair: &Repair) -> String {
     );
     for &index in &repair.chosen {
         let _ = writeln!(out, "  {}", sentence(analysis, &analysis.proof.findings[index]));
+    }
+    // What the choice rests on, named rather than asserted. Every weight behind it had to cite a
+    // stretch of this recording, so the stretches can be added up and shown: a reader who doubts
+    // the total can go to those microseconds and look instead of taking the number on trust.
+    let covered: usize = repair.support.iter().map(|span| span.len()).sum();
+    let _ = writeln!(
+        out,
+        "  Weighed on {} stretch(es) of the recording, spanning {}, held at {}. That span is where \
+         the evidence was measured, not time the chain gets back.",
+        repair.support.len(),
+        micros(i64::try_from(covered).unwrap_or(i64::MAX)),
+        repair.trust,
+    );
+    if repair.unweighable > 0 {
+        let _ = writeln!(
+            out,
+            "  {} further finding(s) cost the chain time but were measured over no stretch, or at \
+             no confidence. They are reported above and were not weighed here, because a cost \
+             resting on nothing cannot be compared with one that was measured.",
+            repair.unweighable,
+        );
     }
     out
 }

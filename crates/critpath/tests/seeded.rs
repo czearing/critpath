@@ -35,7 +35,7 @@ fn the_seeded_defects_are_all_named() {
         .findings
         .iter()
         .filter_map(|finding| match finding {
-            Proven::RepeatedWork { key, cost, .. } => Some((key.1.as_str(), *cost)),
+            Proven::RepeatedWork { key, cost, .. } => Some((key.1.as_str(), cost.value)),
             _ => None,
         })
         .collect();
@@ -46,7 +46,7 @@ fn the_seeded_defects_are_all_named() {
         .findings
         .iter()
         .filter_map(|finding| match finding {
-            Proven::DeadWait { cost, .. } => Some(*cost),
+            Proven::DeadWait { cost, .. } => Some(cost.value),
             _ => None,
         })
         .collect();
@@ -97,7 +97,7 @@ fn a_frame_around_other_work_is_not_reported_as_work() {
         .findings()
         .iter()
         .filter_map(|finding| match finding {
-            Proven::RepeatedWork { key, cost, .. } => Some((key.1.as_str(), *cost)),
+            Proven::RepeatedWork { key, cost, .. } => Some((key.1.as_str(), cost.value)),
             _ => None,
         })
         .collect();
@@ -119,7 +119,7 @@ fn a_loop_over_different_things_is_not_a_repeat_but_the_same_thing_twice_is() {
         .findings()
         .iter()
         .filter_map(|finding| match finding {
-            Proven::RepeatedWork { key, cost, .. } => Some((key.1.as_str(), *cost)),
+            Proven::RepeatedWork { key, cost, .. } => Some((key.1.as_str(), cost.value)),
             _ => None,
         })
         .collect();
@@ -270,7 +270,7 @@ fn a_wait_names_what_it_waited_for_only_when_the_source_said_so() {
         .iter()
         .filter_map(|finding| match finding {
             Proven::DeadWait { waited_on, stated, cost, .. } => Some((
-                *cost,
+                cost.value,
                 stated
                     .then(|| waited_on.map(|id| analysis.graph.activities[id].name.as_str()))
                     .flatten(),

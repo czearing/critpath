@@ -7,7 +7,7 @@
 
 use critpath_core::{ActivityId, Graph, Micros, Owner};
 use critpath_graph::CriticalPath;
-use fitkit_core::Refusal;
+use fitkit_core::{Evidence, Refusal, Span};
 use fitkit_ledger::{ask, Citation};
 
 mod laws;
@@ -38,8 +38,23 @@ impl Observation<'_> {
     }
 }
 
+/// The timeline window `[from, until)` as a span of microseconds since the recording began.
+///
+/// A span is a unitless region of the problem, and for a trace the problem is the timeline, so a
+/// finding cites the stretch of it the finding was measured over. Timestamps before the origin are
+/// clamped to it rather than wrapped, since a source that records against an epoch of its own
+/// would otherwise produce a span covering most of the address space.
+pub(crate) fn window(from: Micros, until: Micros) -> Span {
+    let index = |value: Micros| usize::try_from(value.max(0)).unwrap_or(usize::MAX);
+    Span::new(index(from), index(until))
+}
+
 /// One thing a rule proved about the chain.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// A cost is carried as [`Evidence`] rather than as a number: the span of the timeline it was
+/// measured over and the trust the intervals behind it were recorded with. A bare number is where
+/// a tuned constant gets in, with nothing behind it and no way to ask what it was measured from.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Finding {
     /// The same work, by category and name, appears more than once on the chain.
     ///
@@ -54,8 +69,8 @@ pub enum Finding {
         key: (String, String, String),
         /// Where they were, in chain order.
         occurrences: Vec<ActivityId>,
-        /// Time the repeats added to the chain.
-        cost: Micros,
+        /// Time the repeats added to the chain, over the stretch of the timeline they ran in.
+        cost: Evidence<Micros>,
     },
     /// The chain waited while nothing ran anywhere in the trace.
     ///
@@ -75,8 +90,8 @@ pub enum Finding {
         /// what for, so the wait is reported as unattributed instead of being given a subject it
         /// has not earned.
         stated: bool,
-        /// How long nothing ran.
-        cost: Micros,
+        /// How long nothing ran, over exactly the gap it ran in.
+        cost: Evidence<Micros>,
     },
     /// The largest activity in the trace is not on the chain.
     ///
@@ -120,9 +135,18 @@ impl Finding {
     ///
     /// Zero for anything that costs the chain nothing, so it can never be selected as a repair.
     pub fn cost(&self) -> Micros {
+        self.charge().map_or(0, |charge| charge.value)
+    }
+
+    /// The measurement behind [`cost`](Self::cost), for a finding that costs the chain time.
+    ///
+    /// [`None`] where the cost is zero, since there is no measurement to cite for a claim that was
+    /// never made. This is what a selection weighs, so the weight arrives carrying the region it
+    /// speaks for and the trust it is held with rather than as a number on its own.
+    pub fn charge(&self) -> Option<&Evidence<Micros>> {
         match self {
-            Self::RepeatedWork { cost, .. } | Self::DeadWait { cost, .. } => *cost,
-            Self::OffPath { .. } | Self::WaitedWhileInFlight { .. } => 0,
+            Self::RepeatedWork { cost, .. } | Self::DeadWait { cost, .. } => Some(cost),
+            Self::OffPath { .. } | Self::WaitedWhileInFlight { .. } => None,
         }
     }
 
@@ -133,7 +157,7 @@ impl Finding {
     /// the trace prints below the smallest.
     pub fn evidence(&self) -> Micros {
         match self {
-            Self::RepeatedWork { cost, .. } | Self::DeadWait { cost, .. } => *cost,
+            Self::RepeatedWork { cost, .. } | Self::DeadWait { cost, .. } => cost.value,
             Self::OffPath { duration, .. } => *duration,
             Self::WaitedWhileInFlight { overlap, .. } => *overlap,
         }

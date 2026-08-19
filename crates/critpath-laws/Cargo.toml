@@ -12,6 +12,7 @@ authors.workspace = true
 critpath-core.workspace = true
 critpath-graph.workspace = true
 fitkit-core.workspace = true
+fitkit-dp.workspace = true
 fitkit-ledger.workspace = true
 
 [lints]

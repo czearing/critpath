@@ -7,10 +7,10 @@ use core::marker::PhantomData;
 use std::collections::HashMap;
 
 use critpath_core::{Graph, Micros};
-use fitkit_core::{Answer, Refusal};
+use fitkit_core::{Answer, Confidence, Evidence, Refusal};
 use fitkit_ledger::{Citation, Law};
 
-use crate::{Finding, Observation, CRITICAL_PATH, FORMAT};
+use crate::{window, Finding, Observation, CRITICAL_PATH, FORMAT};
 
 /// Category, name, and what the source said the work was done to.
 type Subject<'a> = (&'a str, &'a str, &'a str);
@@ -163,8 +163,25 @@ impl<'a> Law for RepeatedWork<'a> {
             .map(|(key, occurrences)| Finding::RepeatedWork {
                 key: (key.0.to_owned(), key.1.to_owned(), key.2.to_owned()),
                 // Everything after the first occurrence is time the chain spent recomputing what
-                // it already had, so the first is the work and the rest are the cost.
-                cost: occurrences[1..].iter().map(|&id| self_time[id]).sum::<Micros>(),
+                // it already had, so the first is the work and the rest are the cost. The span
+                // cites the stretch the repeats ran across, and the trust is the weakest of the
+                // intervals the cost was summed from, because a total is only as good as the
+                // shakiest measurement inside it.
+                cost: Evidence::new(
+                    window(
+                        graph.activities[occurrences[1]].start,
+                        occurrences[1..]
+                            .iter()
+                            .map(|&id| graph.activities[id].end)
+                            .max()
+                            .unwrap_or_default(),
+                    ),
+                    occurrences[1..]
+                        .iter()
+                        .map(|&id| graph.activities[id].confidence)
+                        .fold(Confidence::FULL, Confidence::min),
+                    occurrences[1..].iter().map(|&id| self_time[id]).sum::<Micros>(),
+                ),
                 occurrences,
             })
             .collect())
@@ -216,7 +233,14 @@ impl<'a> Law for DeadWait<'a> {
                     before: step.activity,
                     waited_on: step.waited_on,
                     stated: step.stated,
-                    cost: step.wait_before,
+                    // The gap is the measurement, so the span is the gap exactly rather than a
+                    // region enclosing it. Trust comes from the interval that fixes where the gap
+                    // ended, since that is the only recorded thing the claim rests on.
+                    cost: Evidence::new(
+                        window(opened, starts),
+                        graph.activities[step.activity].confidence,
+                        step.wait_before,
+                    ),
                 });
             }
         }

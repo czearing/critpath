@@ -27,6 +27,7 @@ critpath-source = { version = "0.1.0", path = "crates/critpath-source" }
 critpath-repo = { version = "0.1.0", path = "crates/critpath-repo" }
 
 fitkit-core = { git = "https://github.com/czearing/fitkit" }
+fitkit-dp = { git = "https://github.com/czearing/fitkit" }
 fitkit-ledger = { git = "https://github.com/czearing/fitkit" }
 
 serde_json = "1"
