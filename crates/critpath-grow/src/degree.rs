@@ -87,10 +87,13 @@ pub struct Solved {
     pub symbols: Vec<Symbol>,
     /// The answer for each routine, by the same index.
     pub growth: Vec<Growth>,
-    /// Routine index by name.
+    /// Routine index by name, for the names that identify exactly one routine.
     ///
-    /// A name defined twice keeps the first, since a call cannot be attributed to one of two
-    /// definitions without knowing what the language does about shadowing.
+    /// A name defined twice is absent here, so a call written against it resolves to nothing and
+    /// contributes no growth. Keeping the first definition instead would make the answer depend on
+    /// which file happened to be read first, and the order two files were handed to the engine in
+    /// is not a property of the program being measured. Both definitions are still solved and
+    /// still reported in their own right; what a duplicated name loses is the ability to be called.
     pub by_name: HashMap<String, usize>,
 }
 
@@ -132,16 +135,25 @@ impl Solved {
 #[must_use]
 pub fn solve(files: &[File]) -> Solved {
     let mut solved = Solved::default();
+    let mut counted: HashMap<&str, usize> = HashMap::new();
+    for file in files {
+        for block in &file.blocks {
+            if block.kind == Kind::Define {
+                if let Some(name) = &block.name {
+                    *counted.entry(name.as_str()).or_insert(0) += 1;
+                }
+            }
+        }
+    }
     for (index, file) in files.iter().enumerate() {
         for block in &file.blocks {
             if block.kind != Kind::Define {
                 continue;
             }
             let Some(name) = block.name.clone() else { continue };
-            if solved.by_name.contains_key(&name) {
-                continue;
+            if counted.get(name.as_str()) == Some(&1) {
+                solved.by_name.insert(name.clone(), solved.symbols.len());
             }
-            solved.by_name.insert(name.clone(), solved.symbols.len());
             solved.symbols.push(Symbol { name, file: index, block: block.id, line: block.line });
         }
     }
@@ -273,6 +285,141 @@ mod tests {
 
     fn files(sources: &[(&str, &str)]) -> Vec<crate::tree::File> {
         sources.iter().map(|(path, text)| read(path, text, for_extension("js").unwrap())).collect()
+    }
+
+    /// A program built to a known answer: routine `i` is `nest[i]` loops deep and calls `calls[i]`.
+    ///
+    /// Every callee is indexed above its caller, so the graph is acyclic by construction and the
+    /// degree is settled by the generator rather than by anything under test.
+    fn model(seed: u64) -> (Vec<String>, Vec<u32>) {
+        use std::fmt::Write as _;
+        let mut noise = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        let mut roll = move || {
+            noise = noise
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(noise >> 33).unwrap_or(0)
+        };
+        let count = 3 + roll() % 6;
+        let nest: Vec<usize> = (0..count).map(|_| roll() % 3).collect();
+        let calls: Vec<Vec<usize>> =
+            (0..count).map(|i| ((i + 1)..count).filter(|_| roll() % 3 == 0).collect()).collect();
+
+        // The answer, straight from the generator: a routine's own nesting, or that nesting
+        // carrying the worst callee, whichever is larger. Solved from the last routine back.
+        let mut truth = vec![0_u32; count];
+        for i in (0..count).rev() {
+            let own = u32::try_from(nest[i]).unwrap_or(0);
+            let through = calls[i].iter().map(|&j| own + truth[j]).max().unwrap_or(0);
+            truth[i] = own.max(through);
+        }
+
+        let sources = (0..count)
+            .map(|i| {
+                let mut text = format!("function r{i}(xs) {{\n");
+                for d in 0..nest[i] {
+                    let pad = "  ".repeat(d + 1);
+                    let _ = writeln!(text, "{pad}for (const e{d} of xs) {{");
+                }
+                let pad = "  ".repeat(nest[i] + 1);
+                for &j in &calls[i] {
+                    let _ = writeln!(text, "{pad}r{j}(xs);");
+                }
+                for d in (0..nest[i]).rev() {
+                    let _ = writeln!(text, "{}}}", "  ".repeat(d + 1));
+                }
+                text.push_str("}\n");
+                text
+            })
+            .collect();
+        (sources, truth)
+    }
+
+    /// The memoised recurrence must answer what the program was built to cost.
+    ///
+    /// Two hundred random call graphs, random loop nesting on both sides of every call, so the
+    /// worst chain is rarely the shortest one and no single-file accumulation reaches it. This is
+    /// the test that would catch a memo returning a stale answer or a depth charged to the wrong
+    /// block: the generator knows the degree before the engine is ever asked.
+    #[test]
+    fn the_memoised_degree_is_the_degree_the_program_was_built_to_have() {
+        for seed in 0..200_u64 {
+            let (sources, truth) = model(seed);
+            let named: Vec<(String, String)> =
+                sources.iter().enumerate().map(|(i, s)| (format!("r{i}.js"), s.clone())).collect();
+            let borrowed: Vec<(&str, &str)> =
+                named.iter().map(|(p, s)| (p.as_str(), s.as_str())).collect();
+            let solved = solve(&files(&borrowed));
+            for (i, want) in truth.iter().enumerate() {
+                assert_eq!(
+                    solved.of(&format!("r{i}")).and_then(super::Growth::degree),
+                    Some(*want),
+                    "seed {seed}, routine r{i}, in:\n{}",
+                    sources.concat()
+                );
+            }
+        }
+    }
+
+    /// The same program handed over in a different order is the same program.
+    ///
+    /// Which file a reader reached first is not a property of the code being measured, so an
+    /// answer that moves when the order does is an answer about the reader. Each model is solved
+    /// forwards and reversed and the two must agree on every routine by name.
+    #[test]
+    fn the_order_the_files_arrive_in_does_not_change_any_answer() {
+        for seed in 0..200_u64 {
+            let (sources, _) = model(seed);
+            let named: Vec<(String, String)> =
+                sources.iter().enumerate().map(|(i, s)| (format!("r{i}.js"), s.clone())).collect();
+            let forwards: Vec<(&str, &str)> =
+                named.iter().map(|(p, s)| (p.as_str(), s.as_str())).collect();
+            let mut backwards = forwards.clone();
+            backwards.reverse();
+            let one = solve(&files(&forwards));
+            let other = solve(&files(&backwards));
+            for i in 0..sources.len() {
+                let name = format!("r{i}");
+                assert_eq!(
+                    one.of(&name).and_then(super::Growth::degree),
+                    other.of(&name).and_then(super::Growth::degree),
+                    "seed {seed}, routine {name} moved when the files were reordered"
+                );
+            }
+        }
+    }
+
+    /// A name that does not name one routine names none.
+    ///
+    /// Both definitions are still measured in their own right, but a call written against the
+    /// shared name carries neither of them, because choosing one would be choosing whichever file
+    /// was read first. The caller is left at the growth it can prove on its own.
+    #[test]
+    fn a_name_defined_twice_is_called_by_nobody_rather_than_resolved_by_read_order() {
+        let sources = [
+            ("a.js", "function pick(xs) {\n  for (const x of xs) {\n    take(x);\n  }\n}\n"),
+            ("b.js", "function pick(xs) {\n  return xs;\n}\n"),
+            ("c.js", "function run(xs) {\n  for (const x of xs) {\n    pick(xs);\n  }\n}\n"),
+        ];
+        let solved = solve(&files(&sources));
+        assert!(solved.of("pick").is_none(), "an ambiguous name resolves to no routine");
+        assert_eq!(
+            solved.of("run").and_then(super::Growth::degree),
+            Some(1),
+            "the caller keeps the loop it wrote and inherits nothing it cannot attribute"
+        );
+        let mut reversed = sources;
+        reversed.reverse();
+        assert_eq!(
+            solve(&files(&reversed)).of("run").and_then(super::Growth::degree),
+            Some(1),
+            "and the same, whichever definition was read first"
+        );
+        assert_eq!(
+            solved.symbols.iter().filter(|s| s.name == "pick").count(),
+            2,
+            "both definitions are still solved and still reportable"
+        );
     }
 
     #[test]
