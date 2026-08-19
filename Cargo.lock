@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "critpath-core",
  "critpath-graph",
+ "critpath-grow",
  "critpath-laws",
  "critpath-repo",
  "critpath-source",
@@ -29,6 +30,10 @@ dependencies = [
  "critpath-core",
  "fitkit-core",
 ]
+
+[[package]]
+name = "critpath-grow"
+version = "0.1.0"
 
 [[package]]
 name = "critpath-laws"

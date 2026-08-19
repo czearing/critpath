@@ -6,6 +6,7 @@ members = [
     "crates/critpath-graph",
     "crates/critpath-laws",
     "crates/critpath-source",
+    "crates/critpath-grow",
     "crates/critpath-repo",
     "crates/critpath",
 ]
@@ -24,6 +25,7 @@ critpath-trace = { version = "0.1.0", path = "crates/critpath-trace" }
 critpath-graph = { version = "0.1.0", path = "crates/critpath-graph" }
 critpath-laws = { version = "0.1.0", path = "crates/critpath-laws" }
 critpath-source = { version = "0.1.0", path = "crates/critpath-source" }
+critpath-grow = { version = "0.1.0", path = "crates/critpath-grow" }
 critpath-repo = { version = "0.1.0", path = "crates/critpath-repo" }
 
 fitkit-core = { git = "https://github.com/czearing/fitkit" }

@@ -42,6 +42,15 @@ fn usage() {
     eprintln!("                   are named dynamically is counted as undecidable, never deleted.");
     eprintln!("  --entry NAME     which component is the thing being shipped. Refused when the");
     eprintln!("                   repository holds more than one and none was named.");
+    eprintln!();
+    eprintln!("critpath grow <root>");
+    eprintln!();
+    eprintln!("                   Reads source only, in any language critpath has a grammar for.");
+    eprintln!("                   Nothing is built, installed or run. Solves how far each");
+    eprintln!("                   routine's work grows by a dynamic program over the call graph,");
+    eprintln!("                   and names the exact line carrying it -- including growth that");
+    eprintln!("                   is not written in the routine at all. No time is claimed,");
+    eprintln!("                   because a file that was never executed contains none.");
 }
 
 /// `critpath repo <root> [--entry NAME] [--budget N]`
@@ -100,16 +109,76 @@ fn repo(mut args: impl Iterator<Item = String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `critpath grow <root>`
+///
+/// Reads source only. No build, no install, no launch. What it prints is a position and a reason:
+/// the line to open, and what was proven about it.
+fn grow(mut args: impl Iterator<Item = String>) -> ExitCode {
+    let Some(root) = args.next() else {
+        usage();
+        return ExitCode::from(2);
+    };
+    let sources = critpath_grow::read(std::path::Path::new(&root));
+    let solved = sources.solve();
+    let spots = critpath_grow::check(&sources.files, &solved);
+    let out = grew(&root, &sources, &spots);
+    if let Err(error) = io::stdout().write_all(out.as_bytes()) {
+        if error.kind() != io::ErrorKind::BrokenPipe {
+            eprintln!("cannot write the report: {error}");
+            return ExitCode::from(2);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// The report for what was read from source.
+fn grew(root: &str, sources: &critpath_grow::Sources, spots: &[critpath_grow::Spot]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{root}: {} files read, {} not in a language critpath reads\n",
+        sources.files.len(),
+        sources.unread
+    );
+    if spots.is_empty() {
+        out.push_str("Nothing was proven. That is not the same as nothing being slow: it means\n");
+        out.push_str("no rule here could settle a cost from the source without running it.\n");
+    }
+    for spot in spots {
+        let _ = writeln!(
+            out,
+            "{}:{}  {}\n    {:?} -- {}",
+            sources.path(spot.file),
+            spot.line,
+            spot.name,
+            spot.rule,
+            spot.rule.says()
+        );
+        for step in spot.chain.iter().skip(1) {
+            let _ = writeln!(out, "      through {}:{}", sources.path(step.file), step.line);
+        }
+        out.push('\n');
+    }
+    out
+}
+
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let Some(path) = args.next() else {
         usage();
         return ExitCode::from(2);
     };
-    if path == "repo" {
-        return repo(args);
+    match path.as_str() {
+        "repo" => return repo(args),
+        "grow" => return grow(args),
+        _ => {}
     }
+    trace(&path, args)
+}
 
+/// `critpath <trace.json> [flags]`
+fn trace(path: &str, mut args: std::iter::Skip<std::env::Args>) -> ExitCode {
     let mut budget = None;
     let mut maps = None;
     let mut asked = Asked::finish();
@@ -162,7 +231,7 @@ fn main() -> ExitCode {
         }
     }
 
-    let bytes = match std::fs::read(&path) {
+    let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) => {
             eprintln!("cannot read {path}: {error}");
