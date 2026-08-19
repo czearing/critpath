@@ -153,7 +153,6 @@ fn one_change_buys_the_larger_defect() {
     let repair = analysis.repair(1).unwrap();
     assert_eq!(repair.chosen.len(), 1);
     assert_eq!(repair.recovered, 35_000, "the dead wait, not the repeated parse");
-    assert!(repair.proven, "three findings enumerate exactly");
 }
 
 #[test]

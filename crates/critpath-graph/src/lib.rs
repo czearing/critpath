@@ -59,6 +59,15 @@ pub struct CriticalPath {
     pub slack: Vec<Option<Slack>>,
     /// When the last thing to finish finished, which is what the room is measured against.
     pub finish: Micros,
+    /// Whether nothing could have been off this chain.
+    ///
+    /// A trace with no concurrency yields a single unbroken sequence in which every activity is
+    /// critical and every float is zero -- a degenerate network, which scheduling has a name for
+    /// precisely because it looks identical to a hard-won result. There was no alternative to
+    /// weigh, so calling the outcome a longest path dresses a foregone conclusion as a choice.
+    /// Carried as a fact rather than a refusal, because such a recording is still worth reading;
+    /// what it may not do is claim that being on the chain distinguishes anything.
+    pub corridor: bool,
 }
 
 impl CriticalPath {
@@ -137,7 +146,18 @@ pub fn critical_path(graph: &Graph) -> Answer<CriticalPath> {
 
     let margin = chain::competitor(&reckoning, walked)
         .map_or(Margin::UNBOUNDED, |slack| Margin::new(slack as f64));
-    Ok(CriticalPath { steps, work, wait, margin, slack: reckoning.slack, finish: reckoning.finish })
+    // A chain that holds every activity that could have decided anything had no rival to beat.
+    let deciding = graph.activities.iter().filter(|activity| activity.decides()).count();
+    let corridor = deciding > 0 && walked.len() >= deciding;
+    Ok(CriticalPath {
+        steps,
+        work,
+        wait,
+        margin,
+        slack: reckoning.slack,
+        finish: reckoning.finish,
+        corridor,
+    })
 }
 
 #[cfg(test)]
@@ -218,6 +238,21 @@ mod tests {
         let path = critical_path(&subject).unwrap();
         assert_eq!(path.steps.len(), 2);
         assert_eq!(critpath_graph_contradictions(&subject), 1);
+    }
+
+    #[test]
+    fn a_recording_with_no_rival_says_so_instead_of_claiming_a_longest_path() {
+        // Every activity in sequence on one track: a degenerate network, where every activity is
+        // critical and every float is zero. The chain here is not a result, it is the recording,
+        // and a report that does not say so reads exactly like one that weighed alternatives.
+        let subject =
+            graph(vec![activity(1, 0, 10), activity(1, 10, 20)], &[(0, 1, EdgeKind::Serial)]);
+        let path = critical_path(&subject).unwrap();
+        assert!(path.corridor, "nothing could have been off this chain");
+
+        // A trace with genuine concurrency decided something, so it must not be flagged.
+        let rival = critical_path(&fat_parallel_trace()).unwrap();
+        assert!(!rival.corridor, "an activity off the chain proves there was a choice");
     }
 
     #[test]

@@ -346,8 +346,15 @@ pub fn report_isolated(
             micros(margin_micros(path.margin.get()))
         },
     );
+    if path.corridor {
+        let _ = writeln!(
+            out,
+            "This recording holds no concurrency, so the chain is every activity in it and \
+             nothing could have been off it. Being on the chain therefore distinguishes nothing \
+             here, and the order below is the recording's own, not a result of weighing rivals."
+        );
+    }
 
-    let _ = writeln!(out, "\nThe chain, in order:");
     for step in &path.steps {
         let activity = &analysis.graph.activities[step.activity];
         if step.wait_before > 0 {
@@ -551,10 +558,9 @@ fn plan(analysis: &Analysis, repair: &Repair) -> String {
         return "No change within the budget buys any time on this chain.".to_owned();
     }
     let mut out = format!(
-        "Best {} change(s), worth {}{}:\n",
+        "Best {} change(s), worth {} and optimal, not searched for:\n",
         repair.chosen.len(),
         micros(repair.recovered),
-        if repair.proven { " and proven optimal" } else { " (beam search, not proven optimal)" },
     );
     for &index in &repair.chosen {
         let _ = writeln!(out, "  {}", sentence(analysis, &analysis.proof.findings[index]));

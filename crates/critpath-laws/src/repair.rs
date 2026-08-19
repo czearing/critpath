@@ -1,18 +1,9 @@
 //! Which repairs to make, and where making more of them stops paying.
 
 use critpath_core::Micros;
-use fitkit_core::{Answer, Margin, Refusal, Scale};
-use fitkit_dp::{optimise_subset, SubsetResult, MAX_POOL};
+use fitkit_core::{Answer, Margin, Refusal};
 
 use crate::Finding;
-
-/// Enumeration is affordable up to this many findings: 2^20 subsets is about a million scorings.
-///
-/// A statement about this machine, not about traces. Beyond it the search is a beam and says so.
-const AFFORDABLE: usize = 20;
-
-/// States kept per size once the search is a beam.
-const BEAM: usize = 256;
 
 /// A chosen set of repairs and what it is worth.
 #[derive(Clone, Debug, PartialEq)]
@@ -21,11 +12,6 @@ pub struct Repair {
     pub chosen: Vec<usize>,
     /// Time the chain loses if all of them land, never more than the margin allows.
     pub recovered: Micros,
-    /// Whether every combination was enumerated, so this is the proven best set.
-    ///
-    /// False means the search was a beam and a better set may exist. Reported rather than
-    /// smoothed over, because an unproven optimum is a different claim.
-    pub proven: bool,
 }
 
 /// Choose at most `budget` repairs, maximising time removed from the chain.
@@ -40,36 +26,48 @@ pub struct Repair {
 ///
 /// # Errors
 ///
-/// Refuses when there are more findings than the mask can hold, or when nothing on offer costs the
-/// chain anything, since selecting among worthless repairs would report a decision that was not
-/// made on evidence.
+/// Refuses when nothing on offer costs the chain anything, since selecting among worthless
+/// repairs would report a decision that was not made on evidence.
 pub fn choose(findings: &[Finding], budget: usize, margin: Margin) -> Answer<Repair> {
-    if findings.len() > MAX_POOL {
-        return Err(Refusal::outside_provenance("more findings than the subset mask can hold"));
-    }
     if !findings.iter().any(|finding| finding.cost() > 0) {
         return Err(Refusal::uninformative("no finding costs the chain any time"));
     }
-    let ceiling = margin.get();
-    let pool = findings.len();
-    // Two quantities of different kinds: time recovered, which decides, and the number of changes,
-    // which only breaks ties. Keeping them apart needs a weight wide enough that no possible run
-    // of tie-breaking can reach one microsecond of recovery, and that weight is derived from the
-    // subject rather than chosen: at most `pool` changes, each worth one. Picking it by eye is the
-    // failure this guards against, because it has to be re-derived every time the pool can grow.
-    let scale = Scale::over(pool, 1.0).breach();
-    let result: SubsetResult = optimise_subset(pool, AFFORDABLE, BEAM, |members| {
-        let count = members.count_ones() as usize;
-        if count > budget {
-            return f64::NEG_INFINITY;
+    // This selection was a subset search: exhaustive below twenty findings and a beam of 256
+    // above. Both were wrong, and the beam was wrong twice -- it imported two constants that
+    // decided the answer, and it reported an optimum it had not proved.
+    //
+    // The costs here are disjoint by construction, which is what makes a search unnecessary.
+    // A repeat is charged in self time, and an activity has one identity, so no activity is
+    // counted by two repeat findings. A wait is the gap before a chain step, and the gaps between
+    // consecutive steps do not overlap. Self time is time something ran and a dead wait is time
+    // nothing ran, so the two kinds cannot claim the same microsecond either. Total recovery is
+    // therefore additive, and the only constraint is how many changes are affordable.
+    //
+    // Additive value under a plain count of items is a uniform matroid, and Rado-Edmonds says
+    // greedy attains the exact optimum on a matroid for any linear objective -- it is the theorem
+    // that characterises matroids. So taking the costliest findings is not an approximation of the
+    // search that was here before; it is the answer the search was trying to find, obtained
+    // exactly, in n log n rather than 2^n. A table would tabulate states already determined.
+    let ceiling = as_micros(margin.get());
+    let mut order: Vec<usize> = (0..findings.len()).filter(|&i| findings[i].cost() > 0).collect();
+    // Ties broken by position so the report is stable between runs on the same trace.
+    order.sort_by_key(|&i| (core::cmp::Reverse(findings[i].cost()), i));
+    // Two criteria, in order: recover as much as the margin can realise, then do it with as few
+    // changes as possible. Taking the costliest first satisfies both at once, because no other set
+    // of the same size can reach further and no smaller set can reach the same total. Stopping the
+    // moment the ceiling is reached is what keeps the second criterion honest: a change that buys
+    // time the schedule cannot realise is a change nobody should be asked to make.
+    let mut chosen = Vec::new();
+    let mut recovered: Micros = 0;
+    for index in order {
+        if chosen.len() >= budget || recovered >= ceiling {
+            break;
         }
-        let recovered: Micros =
-            (0..pool).filter(|i| members & (1 << i) != 0).map(|i| findings[i].cost()).sum();
-        (recovered as f64).min(ceiling).mul_add(scale, -(count as f64))
-    });
-    let chosen: Vec<usize> = result.indices().filter(|&i| i < pool).collect();
-    let recovered: Micros = chosen.iter().map(|&i| findings[i].cost()).sum();
-    Ok(Repair { recovered: recovered.min(as_micros(ceiling)), chosen, proven: result.is_proven() })
+        recovered += findings[index].cost();
+        chosen.push(index);
+    }
+    chosen.sort_unstable();
+    Ok(Repair { recovered: recovered.min(ceiling), chosen })
 }
 
 /// A margin back into the microseconds it was measured in.
@@ -97,7 +95,39 @@ mod tests {
         let repair = choose(&findings, 2, Margin::UNBOUNDED).unwrap();
         assert_eq!(repair.chosen, vec![0, 1], "the two largest, and no more");
         assert_eq!(repair.recovered, 19);
-        assert!(repair.proven);
+    }
+
+    #[test]
+    fn the_choice_matches_exhaustive_enumeration_on_every_budget() {
+        // The search this replaced enumerated subsets below twenty findings and guessed above.
+        // Greedy is exact here rather than approximate, so the test proves it: enumerate every
+        // subset by brute force and check the greedy reaches the same recovery with no more
+        // changes, across every budget and several margins.
+        let costs = [7_i64, 3, 11, 11, 1, 5, 9, 2];
+        let findings: Vec<Finding> = costs.iter().map(|&c| wait(c)).collect();
+        for ceiling in [f64::INFINITY, 40.0, 20.0, 11.0, 1.0] {
+            let margin =
+                if ceiling.is_infinite() { Margin::UNBOUNDED } else { Margin::new(ceiling) };
+            let cap = if ceiling.is_infinite() { i64::MAX } else { super::as_micros(ceiling) };
+            for budget in 0..=costs.len() {
+                let mut best = (0_i64, usize::MAX);
+                for members in 0..(1_u64 << costs.len()) {
+                    let picked: Vec<usize> =
+                        (0..costs.len()).filter(|i| members & (1 << i) != 0).collect();
+                    if picked.len() > budget {
+                        continue;
+                    }
+                    let sum: i64 = picked.iter().map(|&i| costs[i]).sum::<i64>().min(cap);
+                    if sum > best.0 || (sum == best.0 && picked.len() < best.1) {
+                        best = (sum, picked.len());
+                    }
+                }
+                let repair = choose(&findings, budget, margin);
+                let (got, used) = repair.as_ref().map_or((0, 0), |r| (r.recovered, r.chosen.len()));
+                assert_eq!(got, best.0, "budget {budget}, ceiling {ceiling}: recovery differs");
+                assert!(used <= best.1, "budget {budget}: greedy spent more changes than needed");
+            }
+        }
     }
 
     #[test]
